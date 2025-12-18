@@ -76,12 +76,7 @@ export class BufferManager {
 
         if (newCandle.openTime === lastCandle.openTime) {
             // Update existing candle (replace last)
-            // RingBuffer doesn't have replace, so we need to handle this
-            // For now, we'll just push (which overwrites in circular fashion)
-            // This is acceptable since we're updating the most recent candle
-            const candles = buffer.toArray();
-            candles[candles.length - 1] = newCandle;
-            this.setBuffer(symbol, interval, candles);
+            buffer.replaceLast(newCandle);
         } else if (newCandle.openTime > lastCandle.openTime) {
             // New candle
             buffer.push(newCandle);

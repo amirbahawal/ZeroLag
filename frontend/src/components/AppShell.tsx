@@ -28,8 +28,8 @@ export const AppShell: React.FC = () => {
         >
             {/* Status Banner */}
             {apiStatus === 'rate_limited' && (
-                <div className="bg-red-600 text-white text-xs py-1 px-2 text-center font-bold mb-4 rounded">
-                    API RATE LIMITED - PAUSING REQUESTS
+                <div className="absolute top-6 right-6 z-50 bg-red-600 text-white text-xs py-2 px-4 font-bold rounded shadow-lg">
+                    Binance API is rate-limiting your IP. Data may update slowly.
                 </div>
             )}
 

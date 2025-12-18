@@ -13,7 +13,7 @@ import { CountSelector } from '../controls/CountSelector';
  * - Right: Grid count selector + status indicators
  */
 export const TopBar: React.FC = () => {
-    const { wsConnected } = useZeroLagStore();
+    const { wsConnected, apiStatus } = useZeroLagStore();
 
     return (
         <header
@@ -37,12 +37,22 @@ export const TopBar: React.FC = () => {
             <div className="flex-1 flex items-center justify-end gap-4">
                 <CountSelector />
 
-                {/* Live Status Badge */}
-                <div className="px-2 py-1 bg-green-900/30 border border-green-900 rounded flex items-center gap-2">
-                    <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[#0ECB81] animate-pulse' : 'bg-red-500'}`} />
-                    <span className="text-[10px] font-bold tracking-wider" style={{ color: wsConnected ? '#0ECB81' : '#ff4444' }}>
-                        {wsConnected ? 'LIVE' : 'OFFLINE'}
-                    </span>
+                {/* Status Indicators */}
+                <div className="flex items-center gap-3 ml-2">
+                    {/* REST Status */}
+                    <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-medium text-gray-500">REST</span>
+                        <div className={`w-1.5 h-1.5 rounded-full ${apiStatus === 'ok' ? 'bg-[#0ECB81]' :
+                            apiStatus === 'loading' ? 'bg-yellow-500' : 'bg-red-500'
+                            }`} />
+                    </div>
+
+                    {/* WS Status */}
+                    <div className="flex items-center gap-1.5">
+                        <span className="text-[10px] font-medium text-gray-500">WS</span>
+                        <div className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-[#0ECB81]' : 'bg-red-500'
+                            }`} />
+                    </div>
                 </div>
             </div>
         </header>

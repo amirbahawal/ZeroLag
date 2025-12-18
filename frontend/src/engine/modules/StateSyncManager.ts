@@ -1,187 +1,222 @@
 /**
- * State Sync Manager Module
+ * State Sync Manager
  * 
- * Batches store updates to optimize UI rendering performance.
- * Reduces re-renders by 80% by batching updates at 60fps.
+ * Batches store updates to prevent excessive React re-renders.
+ * Flushes at 60fps (16ms intervals) with visible symbol prioritization.
+ * 
+ * Performance Goals:
+ * - Reduce store updates from 60+/sec to 60/sec max
+ * - Prioritize visible symbols for instant UI updates
+ * - Batch background symbol updates
+ * - Prevent UI jank during high-frequency candle updates
  */
 
-import type { Candle, Interval, SymbolMetrics } from '../../core/types';
 import type { ZeroLagState } from '../../state/useZeroLagStore';
+import type { Interval, Candle, SymbolMetrics, SymbolTopEntry, SortMode } from '../../core/types';
 
 interface PendingUpdates {
-    candles?: Map<string, { interval: Interval; candles: Candle[] }>;
-    metrics?: Record<string, SymbolMetrics>;
-    rankings?: any;
-    activeSymbols?: string[];
+    candles: Record<string, Candle[]>;
+    metrics: Record<string, SymbolMetrics>;
+    rankings: Record<SortMode, SymbolTopEntry[]> | null;
 }
 
 export class StateSyncManager {
-    private pendingUpdates: PendingUpdates = {};
-    private batchTimer: ReturnType<typeof setTimeout> | null = null;
-    private readonly BATCH_DELAY = 16; // ~60fps
+    private store: ZeroLagState;
+    private flushTimer: ReturnType<typeof setTimeout> | null = null;
     private visibleSymbols = new Set<string>();
 
-    private store: ZeroLagState;
+    // Separate queues for visible vs background symbols
+    private visibleUpdates: PendingUpdates = {
+        candles: {},
+        metrics: {},
+        rankings: null
+    };
+
+    private backgroundUpdates: PendingUpdates = {
+        candles: {},
+        metrics: {},
+        rankings: null
+    };
+
+    // Flush intervals
+    private readonly VISIBLE_FLUSH_MS = 16;      // 60fps for visible
+    private readonly BACKGROUND_FLUSH_MS = 1000;  // 1fps for background
+
+    private lastVisibleFlush = 0;
+    private lastBackgroundFlush = 0;
 
     constructor(store: ZeroLagState) {
         this.store = store;
     }
 
     /**
-     * Update visible symbols list
-     * Used to determine which symbols need store updates
+     * Set which symbols are currently visible in the grid
+     * Used to prioritize their updates
      */
     setVisibleSymbols(symbols: string[]): void {
         this.visibleSymbols = new Set(symbols);
     }
 
     /**
-     * Queue candle update for a symbol
-     * Only queues if symbol is visible
+     * Queue a candle update
+     * Automatically routes to visible or background queue
      */
     queueCandleUpdate(symbol: string, interval: Interval, candles: Candle[]): void {
-        // Only update store for visible symbols
-        if (!this.visibleSymbols.has(symbol)) {
-            return;
-        }
+        const key = `${symbol}:${interval}`;
 
-        if (!this.pendingUpdates.candles) {
-            this.pendingUpdates.candles = new Map();
+        if (this.visibleSymbols.has(symbol)) {
+            this.visibleUpdates.candles[key] = candles;
+            this.scheduleFlush('visible');
+        } else {
+            this.backgroundUpdates.candles[key] = candles;
+            this.scheduleFlush('background');
         }
-
-        this.pendingUpdates.candles.set(symbol, { interval, candles });
-        this.scheduleBatch();
     }
 
     /**
      * Queue metrics update
-     * Merges with existing pending metrics
+     * Can update multiple symbols at once
      */
     queueMetricsUpdate(metrics: Record<string, SymbolMetrics>): void {
-        if (!this.pendingUpdates.metrics) {
-            this.pendingUpdates.metrics = {};
+        // Split into visible and background
+        for (const [symbol, metric] of Object.entries(metrics)) {
+            if (this.visibleSymbols.has(symbol)) {
+                this.visibleUpdates.metrics[symbol] = metric;
+            } else {
+                this.backgroundUpdates.metrics[symbol] = metric;
+            }
         }
 
-        // Merge with existing pending metrics
-        this.pendingUpdates.metrics = {
-            ...this.pendingUpdates.metrics,
-            ...metrics
-        };
-
-        this.scheduleBatch();
+        this.scheduleFlush('both');
     }
 
     /**
      * Queue rankings update
+     * Rankings affect both visible and background, so always high priority
      */
-    queueRankingsUpdate(rankings: any): void {
-        this.pendingUpdates.rankings = rankings;
-        this.scheduleBatch();
+    queueRankingsUpdate(rankings: Record<SortMode, SymbolTopEntry[]>): void {
+        this.visibleUpdates.rankings = rankings;
+        this.scheduleFlush('visible');
     }
 
     /**
-     * Queue active symbols update
+     * Schedule flush based on priority
      */
-    queueActiveSymbolsUpdate(symbols: string[]): void {
-        this.pendingUpdates.activeSymbols = symbols;
-        this.scheduleBatch();
-    }
-
-    /**
-     * Force immediate flush of pending updates
-     */
-    flush(): void {
-        if (this.batchTimer) {
-            clearTimeout(this.batchTimer);
-            this.batchTimer = null;
+    private scheduleFlush(priority: 'visible' | 'background' | 'both'): void {
+        if (this.flushTimer !== null) {
+            return; // Already scheduled
         }
 
-        this.executeBatch();
-    }
+        // Determine flush delay based on priority
+        const now = Date.now();
+        let delay = 0;
 
-    /**
-     * Schedule batch execution
-     */
-    private scheduleBatch(): void {
-        if (this.batchTimer) return;
-
-        this.batchTimer = setTimeout(() => {
-            this.executeBatch();
-            this.batchTimer = null;
-        }, this.BATCH_DELAY);
-    }
-
-    /**
-     * Execute batched updates
-     */
-    private executeBatch(): void {
-        // Update candles
-        if (this.pendingUpdates.candles && this.pendingUpdates.candles.size > 0) {
-            const candlesUpdate: Record<string, Candle[]> = {};
-
-            for (const [symbol, { interval, candles }] of this.pendingUpdates.candles) {
-                candlesUpdate[`${symbol}:${interval}`] = candles;
-            }
-
-            this.store.setAllCandles(candlesUpdate);
+        if (priority === 'visible' || priority === 'both') {
+            const timeSinceLastVisible = now - this.lastVisibleFlush;
+            delay = Math.max(0, this.VISIBLE_FLUSH_MS - timeSinceLastVisible);
+        } else {
+            const timeSinceLastBackground = now - this.lastBackgroundFlush;
+            delay = Math.max(0, this.BACKGROUND_FLUSH_MS - timeSinceLastBackground);
         }
 
-        // Update metrics
-        if (this.pendingUpdates.metrics && Object.keys(this.pendingUpdates.metrics).length > 0) {
-            this.store.setAllMetrics(this.pendingUpdates.metrics);
+        this.flushTimer = setTimeout(() => {
+            this.flush(priority);
+            this.flushTimer = null;
+        }, delay);
+    }
+
+    /**
+     * Flush pending updates to store
+     */
+    private flush(priority: 'visible' | 'background' | 'both'): void {
+        const now = Date.now();
+
+        // Flush visible updates
+        if (priority === 'visible' || priority === 'both') {
+            this.flushVisible();
+            this.lastVisibleFlush = now;
+        }
+
+        // Flush background updates
+        if (priority === 'background' || priority === 'both') {
+            this.flushBackground();
+            this.lastBackgroundFlush = now;
+        }
+    }
+
+    /**
+     * Flush visible symbol updates (high priority, 60fps)
+     */
+    private flushVisible(): void {
+        const updates = this.visibleUpdates;
+
+        // Batch candles
+        if (Object.keys(updates.candles).length > 0) {
+            this.store.setAllCandles(updates.candles);
+            updates.candles = {};
+        }
+
+        // Batch metrics
+        if (Object.keys(updates.metrics).length > 0) {
+            this.store.setAllMetrics(updates.metrics);
+            updates.metrics = {};
         }
 
         // Update rankings
-        if (this.pendingUpdates.rankings) {
-            this.store.setRankings(this.pendingUpdates.rankings);
+        if (updates.rankings !== null) {
+            this.store.setRankings(updates.rankings);
+            updates.rankings = null;
         }
-
-        // Update active symbols
-        if (this.pendingUpdates.activeSymbols) {
-            this.store.setActiveSymbols(this.pendingUpdates.activeSymbols);
-        }
-
-        // Clear pending updates
-        this.pendingUpdates = {};
     }
 
     /**
-     * Get pending update counts
+     * Flush background symbol updates (low priority, 1fps)
      */
-    getPendingCounts(): {
-        candles: number;
-        metrics: number;
+    private flushBackground(): void {
+        const updates = this.backgroundUpdates;
+
+        // Batch candles
+        if (Object.keys(updates.candles).length > 0) {
+            this.store.setAllCandles(updates.candles);
+            updates.candles = {};
+        }
+
+        // Batch metrics
+        if (Object.keys(updates.metrics).length > 0) {
+            this.store.setAllMetrics(updates.metrics);
+            updates.metrics = {};
+        }
+    }
+
+    /**
+     * Force immediate flush (use sparingly)
+     */
+    forceFlush(): void {
+        if (this.flushTimer) {
+            clearTimeout(this.flushTimer);
+            this.flushTimer = null;
+        }
+
+        this.flushVisible();
+        this.flushBackground();
+    }
+
+    /**
+     * Get statistics about pending updates
+     */
+    getStats(): {
+        visibleCandles: number;
+        visibleMetrics: number;
+        backgroundCandles: number;
+        backgroundMetrics: number;
         hasRankings: boolean;
-        hasActiveSymbols: boolean;
     } {
         return {
-            candles: this.pendingUpdates.candles?.size ?? 0,
-            metrics: Object.keys(this.pendingUpdates.metrics ?? {}).length,
-            hasRankings: !!this.pendingUpdates.rankings,
-            hasActiveSymbols: !!this.pendingUpdates.activeSymbols
+            visibleCandles: Object.keys(this.visibleUpdates.candles).length,
+            visibleMetrics: Object.keys(this.visibleUpdates.metrics).length,
+            backgroundCandles: Object.keys(this.backgroundUpdates.candles).length,
+            backgroundMetrics: Object.keys(this.backgroundUpdates.metrics).length,
+            hasRankings: this.visibleUpdates.rankings !== null
         };
-    }
-
-    /**
-     * Check if updates are pending
-     */
-    hasPending(): boolean {
-        return (
-            (this.pendingUpdates.candles?.size ?? 0) > 0 ||
-            Object.keys(this.pendingUpdates.metrics ?? {}).length > 0 ||
-            !!this.pendingUpdates.rankings ||
-            !!this.pendingUpdates.activeSymbols
-        );
-    }
-
-    /**
-     * Clear all pending updates without executing
-     */
-    clear(): void {
-        if (this.batchTimer) {
-            clearTimeout(this.batchTimer);
-            this.batchTimer = null;
-        }
-        this.pendingUpdates = {};
     }
 }

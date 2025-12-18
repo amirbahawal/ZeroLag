@@ -17,12 +17,14 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
     // Ruler State
     const rulerState = useRef<{
         active: boolean;
+        fixed: boolean;
         startIdx: number | null;
         startVal: number | null;
         endIdx: number | null;
         endVal: number | null;
     }>({
         active: false,
+        fixed: false,
         startIdx: null,
         startVal: null,
         endIdx: null,
@@ -211,19 +213,28 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                 const s = rulerState.current;
                 if (!s.active) {
                     s.active = true;
+                    s.fixed = false;
                     s.startIdx = idx;
                     s.startVal = val;
                     s.endIdx = idx;
                     s.endVal = val;
+                } else if (!s.fixed) {
+                    s.fixed = true;
+                    s.endIdx = idx;
+                    s.endVal = val;
                 } else {
-                    s.active = false;
-                    s.startIdx = null;
+                    // Third click restarts measurement
+                    s.fixed = false;
+                    s.startIdx = idx;
+                    s.startVal = val;
+                    s.endIdx = idx;
+                    s.endVal = val;
                 }
                 u.redraw();
             });
             over.addEventListener('mousemove', (e) => {
                 const s = rulerState.current;
-                if (!s.active) return;
+                if (!s.active || s.fixed) return;
                 const rect = over.getBoundingClientRect();
                 const idx = u.posToIdx(e.clientX - rect.left);
                 const val = u.posToVal(e.clientY - rect.top, 'y');
@@ -272,13 +283,14 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (e.key === 'Escape') {
-                rulerState.current = { active: false, startIdx: null, startVal: null, endIdx: null, endVal: null };
+                rulerState.current = { active: false, fixed: false, startIdx: null, startVal: null, endIdx: null, endVal: null };
                 if (uPlotRef.current) uPlotRef.current.redraw();
             }
         };
         const handleKeyUp = (e: KeyboardEvent) => {
             if (e.key === 'Shift' && rulerState.current.active) {
                 rulerState.current.active = false;
+                rulerState.current.fixed = false;
                 if (uPlotRef.current) uPlotRef.current.redraw();
             }
         };

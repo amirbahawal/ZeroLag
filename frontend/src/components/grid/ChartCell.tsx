@@ -79,7 +79,7 @@ export const ChartCell: React.FC<ChartCellProps> = ({ entry }) => {
             <div
                 className="absolute inset-0 flex items-center justify-center pointer-events-none select-none"
                 style={{
-                    fontSize: '120px',
+                    fontSize: '32px',
                     fontWeight: 900,
                     color: 'rgba(255, 255, 255, 0.04)',
                     zIndex: 0,

@@ -57,6 +57,18 @@ export class RingBuffer<T> {
     }
 
     /**
+     * Replace last item (most recent)
+     */
+    replaceLast(item: T): void {
+        if (this.size === 0) {
+            this.push(item);
+            return;
+        }
+        const lastIndex = (this.tail - 1 + this.capacity) % this.capacity;
+        this.buffer[lastIndex] = item;
+    }
+
+    /**
      * Clear all items
      */
     clear(): void {
