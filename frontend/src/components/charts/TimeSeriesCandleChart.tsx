@@ -2,26 +2,13 @@ import React, { useEffect, useRef, useState } from 'react';
 import uPlot from 'uplot';
 import 'uplot/dist/uPlot.min.css';
 import type { Interval, Candle } from '../../core/types';
+import { useZeroLagStore } from '../../state/useZeroLagStore';
 
 interface TimeSeriesCandleChartProps {
     symbol: string;
     interval: Interval;
     candles: Candle[];
 }
-
-const CANDLE_STYLE = {
-    bodyWidthPx: 7,        // Thicker bodies
-    wickWidthPx: 2,        // Thicker wicks
-    minBodyHeight: 2,      // Minimum height for doji candles
-    gapRatio: 0.3,         // 30% gap, 70% candle (tighter spacing)
-
-    // Colors - vibrant and saturated
-    bullColor: '#1fd39a',  // Brighter green
-    bearColor: '#f45b6c',  // Brighter red
-
-    // Y-axis padding
-    yPaddingPercent: 12,    // Increased to 12% to prevent hitting grid edges
-};
 
 const intervalToSeconds = (interval: Interval): number => {
     const unit = interval.slice(-1);
@@ -38,6 +25,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
     const chartRef = useRef<HTMLDivElement>(null);
     const uPlotRef = useRef<uPlot | null>(null);
     const [dimensions, setDimensions] = useState({ width: 0, height: 0 });
+    const gridCount = useZeroLagStore(state => state.count);
 
     // Ruler State
     const rulerState = useRef<{
@@ -85,8 +73,35 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
     useEffect(() => {
         if (!chartRef.current || dimensions.width === 0 || dimensions.height === 0) return;
 
-        // Show last 60 candles for a rich, filled look
-        const visibleCandlesData = safeCandles.slice(-60);
+        // RESPONSIVE STYLING BASED ON GRID SIZE
+        // As grid size increases, we show fewer candles to keep them thick and visible
+        let numVisible = 60;
+        let bodyWidthPx = 7;
+        let wickWidthPx = 2;
+        let yPaddingPercent = 12;
+        let gapRatio = 0.3;
+
+        if (gridCount >= 25) { // 5x5
+            numVisible = 30;
+            bodyWidthPx = 4;
+            wickWidthPx = 1;
+            yPaddingPercent = 15;
+            gapRatio = 0.35;
+        } else if (gridCount >= 16) { // 4x4
+            numVisible = 40;
+            bodyWidthPx = 5;
+            wickWidthPx = 1.5;
+            yPaddingPercent = 14;
+            gapRatio = 0.32;
+        } else if (gridCount >= 9) { // 3x3
+            numVisible = 50;
+            bodyWidthPx = 6;
+            wickWidthPx = 2;
+            yPaddingPercent = 12;
+            gapRatio = 0.3;
+        }
+
+        const visibleCandlesData = safeCandles.slice(-numVisible);
 
         const data: [number[], number[], number[], number[], number[], number[]] = [[], [], [], [], [], []];
         visibleCandlesData.forEach(c => {
@@ -99,7 +114,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         });
 
         // @ts-ignore
-        if (uPlotRef.current && uPlotRef.current._interval === interval) {
+        if (uPlotRef.current && uPlotRef.current._interval === interval && uPlotRef.current._gridCount === gridCount) {
             uPlotRef.current.setData(data);
             uPlotRef.current.setSize(dimensions);
             return;
@@ -109,6 +124,9 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             uPlotRef.current.destroy();
             uPlotRef.current = null;
         }
+
+        const bullColor = '#1fd39a';
+        const bearColor = '#f45b6c';
 
         const drawCandles = (u: uPlot) => {
             const { ctx } = u;
@@ -122,8 +140,8 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             // Calculate candle width
             const totalSpacePerCandle = width / visibleCount;
             const candleBodyWidth = Math.max(
-                CANDLE_STYLE.bodyWidthPx,
-                Math.floor(totalSpacePerCandle * (1 - CANDLE_STYLE.gapRatio))
+                bodyWidthPx,
+                Math.floor(totalSpacePerCandle * (1 - gapRatio))
             );
 
             ctx.save();
@@ -138,7 +156,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                 if (t == null || open == null || high == null || low == null || close == null) continue;
 
                 const isBullish = (close as number) >= (open as number);
-                const color = isBullish ? CANDLE_STYLE.bullColor : CANDLE_STYLE.bearColor;
+                const color = isBullish ? bullColor : bearColor;
 
                 const xCenter = Math.round(u.valToPos(t, 'x', true));
                 const yHigh = Math.round(u.valToPos(high, 'y', true));
@@ -149,11 +167,11 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                 // Body dimensions
                 const bodyTop = Math.min(yOpen, yClose);
                 const bodyBottom = Math.max(yOpen, yClose);
-                const bodyHeight = Math.max(CANDLE_STYLE.minBodyHeight, bodyBottom - bodyTop);
+                const bodyHeight = Math.max(2, bodyBottom - bodyTop);
 
                 // Draw wicks
                 ctx.strokeStyle = color;
-                ctx.lineWidth = CANDLE_STYLE.wickWidthPx;
+                ctx.lineWidth = wickWidthPx;
 
                 // Upper wick
                 if (yHigh < bodyTop) {
@@ -188,8 +206,8 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             const visibleCount = (idx1 - idx0) + 3;
             const totalSpacePerCandle = width / visibleCount;
             const barWidth = Math.max(
-                CANDLE_STYLE.bodyWidthPx,
-                Math.floor(totalSpacePerCandle * (1 - CANDLE_STYLE.gapRatio))
+                bodyWidthPx,
+                Math.floor(totalSpacePerCandle * (1 - gapRatio))
             );
 
             ctx.save();
@@ -201,7 +219,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                 if (t == null || v == null || o == null || c == null) continue;
 
                 const isBullish = (c as number) >= (o as number);
-                const color = isBullish ? CANDLE_STYLE.bullColor : CANDLE_STYLE.bearColor;
+                const color = isBullish ? bullColor : bearColor;
 
                 const xCenter = Math.round(u.valToPos(t, 'x', true));
                 const volumeY = Math.round(u.valToPos(v, 'vol', true));
@@ -334,14 +352,14 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             axes: [
                 {
                     show: false,
-                    grid: { show: false } // No vertical grid lines
+                    grid: { show: false }
                 },
                 {
-                    show: false, // Hide Y-axis labels for minimalism
+                    show: false,
                     scale: 'y',
                     grid: {
                         show: true,
-                        stroke: '#191d28', // --grid-lines color
+                        stroke: '#191d28',
                         width: 1,
                         dash: []
                     }
@@ -359,7 +377,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                     auto: true,
                     range: (_u, min, max) => {
                         const range = max - min;
-                        const padding = range * (CANDLE_STYLE.yPaddingPercent / 100);
+                        const padding = range * (yPaddingPercent / 100);
                         return [min - padding, max + padding];
                     }
                 },
@@ -379,7 +397,9 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         uPlotRef.current = new uPlot(opts, data, chartRef.current!);
         // @ts-ignore
         uPlotRef.current._interval = interval;
-    }, [symbol, interval, dimensions, safeCandles]);
+        // @ts-ignore
+        uPlotRef.current._gridCount = gridCount;
+    }, [symbol, interval, dimensions, safeCandles, gridCount]);
 
     // Global Key Listener
     useEffect(() => {
