@@ -2,16 +2,13 @@
 @tailwind components;
 @tailwind utilities;
 
-/* =============================================
-   CSS Custom Properties (Design Tokens)
-   ============================================= */
 :root {
   /* Background Colors */
   --bg-page: #05060a;
   --bg-panel: #0c0f18;
   --bg-panel-soft: #10131d;
 
-  /* Border Colors */
+  /* Border & Grid Colors */
   --border-subtle: #181c28;
   --grid-lines: #191d28;
 
@@ -30,7 +27,7 @@
   --candle-up: #1fd39a;
   --candle-down: #f45b6c;
 
-  /* Typography */
+  /* Typography Settings */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -47,13 +44,13 @@
 html {
   scroll-behavior: smooth;
   font-size: 14px;
+  /* Base size 14px */
 }
 
 body {
   margin: 0;
   padding: 0;
-  font-family: 'Inter', 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI',
-    'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Helvetica Neue', sans-serif;
+  font-family: 'Inter', 'DM Sans', system-ui, -apple-system, sans-serif;
   background-color: var(--bg-page);
   color: var(--text-main);
   line-height: 1.5;
@@ -96,9 +93,9 @@ body {
 }
 
 .chart-cell-hover:hover {
-  transform: translateY(-2px);
-  border-color: var(--accent-cyan);
-  box-shadow: 0 0 20px rgba(28, 208, 249, 0.15);
+  transform: translateY(-1px);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 18px rgba(60, 130, 255, 0.25);
 }
 
 /* Metric Badge */
@@ -207,6 +204,7 @@ body {
     opacity: 0;
     transform: translateY(8px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
@@ -228,29 +226,82 @@ body {
 }
 
 /* Staggered delays for grid items */
-.chart-cell-enter:nth-child(1) { animation-delay: 0.03s; }
-.chart-cell-enter:nth-child(2) { animation-delay: 0.06s; }
-.chart-cell-enter:nth-child(3) { animation-delay: 0.09s; }
-.chart-cell-enter:nth-child(4) { animation-delay: 0.12s; }
-.chart-cell-enter:nth-child(5) { animation-delay: 0.15s; }
-.chart-cell-enter:nth-child(6) { animation-delay: 0.18s; }
-.chart-cell-enter:nth-child(7) { animation-delay: 0.21s; }
-.chart-cell-enter:nth-child(8) { animation-delay: 0.24s; }
-.chart-cell-enter:nth-child(9) { animation-delay: 0.27s; }
-.chart-cell-enter:nth-child(10) { animation-delay: 0.30s; }
-.chart-cell-enter:nth-child(11) { animation-delay: 0.33s; }
-.chart-cell-enter:nth-child(12) { animation-delay: 0.36s; }
-.chart-cell-enter:nth-child(13) { animation-delay: 0.39s; }
-.chart-cell-enter:nth-child(14) { animation-delay: 0.42s; }
-.chart-cell-enter:nth-child(15) { animation-delay: 0.45s; }
-.chart-cell-enter:nth-child(16) { animation-delay: 0.48s; }
-.chart-cell-enter:nth-child(n+17) { animation-delay: 0.50s; }
+.chart-cell-enter:nth-child(1) {
+  animation-delay: 0.03s;
+}
+
+.chart-cell-enter:nth-child(2) {
+  animation-delay: 0.06s;
+}
+
+.chart-cell-enter:nth-child(3) {
+  animation-delay: 0.09s;
+}
+
+.chart-cell-enter:nth-child(4) {
+  animation-delay: 0.12s;
+}
+
+.chart-cell-enter:nth-child(5) {
+  animation-delay: 0.15s;
+}
+
+.chart-cell-enter:nth-child(6) {
+  animation-delay: 0.18s;
+}
+
+.chart-cell-enter:nth-child(7) {
+  animation-delay: 0.21s;
+}
+
+.chart-cell-enter:nth-child(8) {
+  animation-delay: 0.24s;
+}
+
+.chart-cell-enter:nth-child(9) {
+  animation-delay: 0.27s;
+}
+
+.chart-cell-enter:nth-child(10) {
+  animation-delay: 0.30s;
+}
+
+.chart-cell-enter:nth-child(11) {
+  animation-delay: 0.33s;
+}
+
+.chart-cell-enter:nth-child(12) {
+  animation-delay: 0.36s;
+}
+
+.chart-cell-enter:nth-child(13) {
+  animation-delay: 0.39s;
+}
+
+.chart-cell-enter:nth-child(14) {
+  animation-delay: 0.42s;
+}
+
+.chart-cell-enter:nth-child(15) {
+  animation-delay: 0.45s;
+}
+
+.chart-cell-enter:nth-child(16) {
+  animation-delay: 0.48s;
+}
+
+.chart-cell-enter:nth-child(n+17) {
+  animation-delay: 0.50s;
+}
 
 /* Pulse Animation for Live Data */
 @keyframes livePulse {
-  0%, 100% {
+
+  0%,
+  100% {
     box-shadow: 0 0 0 0 rgba(28, 208, 249, 0);
   }
+
   50% {
     box-shadow: 0 0 12px 2px rgba(28, 208, 249, 0.3);
   }

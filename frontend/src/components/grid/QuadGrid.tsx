@@ -33,7 +33,7 @@ const Quadrant: React.FC<QuadrantProps> = memo(({ items, startIndex, isLoading }
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr',
                 gridTemplateRows: '1fr 1fr',
-                gap: '2px',
+                gap: '12px', /* Gap between cells in quadrant */
             }}
         >
             {items.map((item, idx) => {
@@ -79,7 +79,7 @@ const QuadGridInner: React.FC<QuadGridProps> = ({ symbols }) => {
                 display: 'grid',
                 gridTemplateColumns: '1fr 1fr',
                 gridTemplateRows: '1fr 1fr',
-                gap: '4px',
+                gap: '12px', /* Gap between quadrants */
             }}
         >
             {quadrants.map((quadrant, idx) => (

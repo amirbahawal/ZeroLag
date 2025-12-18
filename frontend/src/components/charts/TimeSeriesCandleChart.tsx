@@ -9,6 +9,31 @@ interface TimeSeriesCandleChartProps {
     candles: Candle[];
 }
 
+const CANDLE_STYLE = {
+    bodyWidthPx: 7,        // Thicker bodies
+    wickWidthPx: 2,        // Thicker wicks
+    minBodyHeight: 2,      // Minimum height for doji candles
+    gapRatio: 0.3,         // 30% gap, 70% candle (tighter spacing)
+
+    // Colors - vibrant and saturated
+    bullColor: '#1fd39a',  // Brighter green
+    bearColor: '#f45b6c',  // Brighter red
+
+    // Y-axis padding
+    yPaddingPercent: 12,    // Increased to 12% to prevent hitting grid edges
+};
+
+const intervalToSeconds = (interval: Interval): number => {
+    const unit = interval.slice(-1);
+    const value = parseInt(interval.slice(0, -1));
+    switch (unit) {
+        case 'm': return value * 60;
+        case 'h': return value * 3600;
+        case 'd': return value * 86400;
+        default: return 60;
+    }
+};
+
 export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ symbol, interval, candles = [] }) => {
     const chartRef = useRef<HTMLDivElement>(null);
     const uPlotRef = useRef<uPlot | null>(null);
@@ -60,8 +85,11 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
     useEffect(() => {
         if (!chartRef.current || dimensions.width === 0 || dimensions.height === 0) return;
 
+        // Show last 60 candles for a rich, filled look
+        const visibleCandlesData = safeCandles.slice(-60);
+
         const data: [number[], number[], number[], number[], number[], number[]] = [[], [], [], [], [], []];
-        safeCandles.forEach(c => {
+        visibleCandlesData.forEach(c => {
             data[0].push(c.openTime / 1000);
             data[1].push(c.open);
             data[2].push(c.high);
@@ -83,68 +111,111 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         }
 
         const drawCandles = (u: uPlot) => {
-            u.ctx.save();
-            if (!u.series[0].idxs) { u.ctx.restore(); return; }
-            const [iMin, iMax] = u.series[0].idxs;
-            const style = getComputedStyle(document.documentElement);
-            const upColor = style.getPropertyValue('--candle-up').trim() || '#0ECB81';
-            const downColor = style.getPropertyValue('--candle-down').trim() || '#F6465D';
+            const { ctx } = u;
+            const { width } = u.bbox;
+            if (!u.series[0].idxs) return;
+            const [idx0, idx1] = u.series[0].idxs;
 
-            for (let i = iMin; i <= iMax; i++) {
+            const visibleCount = (idx1 - idx0) + 3; // +3 for the gap
+            if (visibleCount === 0) return;
+
+            // Calculate candle width
+            const totalSpacePerCandle = width / visibleCount;
+            const candleBodyWidth = Math.max(
+                CANDLE_STYLE.bodyWidthPx,
+                Math.floor(totalSpacePerCandle * (1 - CANDLE_STYLE.gapRatio))
+            );
+
+            ctx.save();
+
+            for (let i = idx0; i <= idx1; i++) {
                 const t = u.data[0][i];
-                const o = u.data[1][i];
-                const h = u.data[2][i];
-                const l = u.data[3][i];
-                const c = u.data[4][i];
-                if (t == null || o == null || h == null || l == null || c == null) continue;
+                const open = u.data[1][i];
+                const high = u.data[2][i];
+                const low = u.data[3][i];
+                const close = u.data[4][i];
 
-                const xVal = Math.round(u.valToPos(t, 'x', true));
-                const oVal = Math.round(u.valToPos(o, 'y', true));
-                const hVal = Math.round(u.valToPos(h, 'y', true));
-                const lVal = Math.round(u.valToPos(l, 'y', true));
-                const cVal = Math.round(u.valToPos(c, 'y', true));
-                const isGreen = (c as number) >= (o as number);
-                const color = isGreen ? upColor : downColor;
+                if (t == null || open == null || high == null || low == null || close == null) continue;
 
-                u.ctx.fillStyle = color;
-                u.ctx.strokeStyle = color;
-                u.ctx.lineWidth = 1;
-                u.ctx.beginPath();
-                u.ctx.moveTo(xVal, hVal);
-                u.ctx.lineTo(xVal, lVal);
-                u.ctx.stroke();
-                const bodyHeight = Math.max(Math.abs(oVal - cVal), 1);
-                const barWidth = Math.max((u.bbox.width / (iMax - iMin)) * 0.7, 1);
-                u.ctx.fillRect(xVal - barWidth / 2, Math.min(oVal, cVal), barWidth, bodyHeight);
+                const isBullish = (close as number) >= (open as number);
+                const color = isBullish ? CANDLE_STYLE.bullColor : CANDLE_STYLE.bearColor;
+
+                const xCenter = Math.round(u.valToPos(t, 'x', true));
+                const yHigh = Math.round(u.valToPos(high, 'y', true));
+                const yLow = Math.round(u.valToPos(low, 'y', true));
+                const yOpen = Math.round(u.valToPos(open, 'y', true));
+                const yClose = Math.round(u.valToPos(close, 'y', true));
+
+                // Body dimensions
+                const bodyTop = Math.min(yOpen, yClose);
+                const bodyBottom = Math.max(yOpen, yClose);
+                const bodyHeight = Math.max(CANDLE_STYLE.minBodyHeight, bodyBottom - bodyTop);
+
+                // Draw wicks
+                ctx.strokeStyle = color;
+                ctx.lineWidth = CANDLE_STYLE.wickWidthPx;
+
+                // Upper wick
+                if (yHigh < bodyTop) {
+                    ctx.beginPath();
+                    ctx.moveTo(xCenter, yHigh);
+                    ctx.lineTo(xCenter, bodyTop);
+                    ctx.stroke();
+                }
+
+                // Lower wick
+                if (yLow > bodyBottom) {
+                    ctx.beginPath();
+                    ctx.moveTo(xCenter, bodyBottom);
+                    ctx.lineTo(xCenter, yLow);
+                    ctx.stroke();
+                }
+
+                // Draw body
+                ctx.fillStyle = color;
+                const halfWidth = Math.floor(candleBodyWidth / 2);
+                ctx.fillRect(xCenter - halfWidth, bodyTop, candleBodyWidth, bodyHeight);
             }
-            u.ctx.restore();
+            ctx.restore();
         };
 
         const drawVolume = (u: uPlot) => {
-            u.ctx.save();
-            if (!u.series[0].idxs) { u.ctx.restore(); return; }
-            const [iMin, iMax] = u.series[0].idxs;
-            const style = getComputedStyle(document.documentElement);
-            const upColor = style.getPropertyValue('--candle-up').trim() || '#0ECB81';
-            const downColor = style.getPropertyValue('--candle-down').trim() || '#F6465D';
+            const { ctx } = u;
+            const { width } = u.bbox;
+            if (!u.series[0].idxs) return;
+            const [idx0, idx1] = u.series[0].idxs;
 
-            for (let i = iMin; i <= iMax; i++) {
+            const visibleCount = (idx1 - idx0) + 3;
+            const totalSpacePerCandle = width / visibleCount;
+            const barWidth = Math.max(
+                CANDLE_STYLE.bodyWidthPx,
+                Math.floor(totalSpacePerCandle * (1 - CANDLE_STYLE.gapRatio))
+            );
+
+            ctx.save();
+            for (let i = idx0; i <= idx1; i++) {
                 const t = u.data[0][i];
                 const v = u.data[5][i];
                 const o = u.data[1][i];
                 const c = u.data[4][i];
                 if (t == null || v == null || o == null || c == null) continue;
 
-                const xVal = Math.round(u.valToPos(t, 'x', true));
-                const yVal = Math.round(u.valToPos(v, 'vol', true));
-                const height = (u.bbox.height + u.bbox.top) - yVal;
-                const barWidth = Math.max((u.bbox.width / (iMax - iMin)) * 0.7, 1);
-                const isGreen = (c as number) >= (o as number);
-                u.ctx.fillStyle = isGreen ? upColor : downColor;
-                u.ctx.globalAlpha = 0.3;
-                u.ctx.fillRect(xVal - barWidth / 2, yVal, barWidth, height);
+                const isBullish = (c as number) >= (o as number);
+                const color = isBullish ? CANDLE_STYLE.bullColor : CANDLE_STYLE.bearColor;
+
+                const xCenter = Math.round(u.valToPos(t, 'x', true));
+                const volumeY = Math.round(u.valToPos(v, 'vol', true));
+                const barHeight = (u.bbox.height + u.bbox.top) - volumeY;
+
+                ctx.fillStyle = color + '40'; // 25% opacity
+                ctx.fillRect(
+                    xCenter - Math.floor(barWidth / 2),
+                    volumeY,
+                    barWidth,
+                    barHeight
+                );
             }
-            u.ctx.restore();
+            ctx.restore();
         };
 
         const drawRuler = (u: uPlot) => {
@@ -251,7 +322,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             height: dimensions.height,
             title: '',
             tzDate: (ts) => uPlot.tzDate(new Date(ts * 1000), 'Etc/UTC'),
-            padding: [10, 0, 0, 0],
+            padding: [4, 0, 4, 0],
             series: [
                 { label: 'Time' },
                 { label: 'Open', show: true, paths: () => null, points: { show: false } },
@@ -261,20 +332,51 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
                 { label: 'Volume', scale: 'vol', show: true, paths: () => null, points: { show: false } }
             ],
             axes: [
-                { show: false },
-                { show: false, scale: 'y', grid: { show: true, stroke: 'var(--grid-lines, #2a2d31)', width: 1, dash: [] } }
+                {
+                    show: false,
+                    grid: { show: false } // No vertical grid lines
+                },
+                {
+                    show: false, // Hide Y-axis labels for minimalism
+                    scale: 'y',
+                    grid: {
+                        show: true,
+                        stroke: '#191d28', // --grid-lines color
+                        width: 1,
+                        dash: []
+                    }
+                }
             ],
             scales: {
-                x: { time: true },
-                y: { auto: true },
-                vol: { auto: true, range: (_u, _min, max) => [0, max * 6.66] }
+                x: {
+                    time: true,
+                    range: (_u, min, max) => {
+                        const secondsPerCandle = intervalToSeconds(interval);
+                        return [min, max + (secondsPerCandle * 3)];
+                    }
+                },
+                y: {
+                    auto: true,
+                    range: (_u, min, max) => {
+                        const range = max - min;
+                        const padding = range * (CANDLE_STYLE.yPaddingPercent / 100);
+                        return [min - padding, max + padding];
+                    }
+                },
+                vol: { auto: true, range: (_u, _min, max) => [0, max * 5] }
             },
             hooks: { draw: [drawCandles, drawVolume, drawRuler], init: [initRuler] },
-            cursor: { show: true, drag: { x: true, y: true }, points: { show: false } },
+            cursor: {
+                show: true,
+                drag: { x: true, y: true },
+                points: { show: false },
+                lock: true,
+                focus: { prox: 16 }
+            },
             legend: { show: false }
         };
 
-        uPlotRef.current = new uPlot(opts, data, chartRef.current);
+        uPlotRef.current = new uPlot(opts, data, chartRef.current!);
         // @ts-ignore
         uPlotRef.current._interval = interval;
     }, [symbol, interval, dimensions, safeCandles]);

@@ -33,7 +33,7 @@ export const ChartGrid: React.FC = () => {
 
     return (
         <div
-            className={`grid ${gridClass} gap-3.5 w-full h-full overflow-auto`}
+            className={`grid ${gridClass} gap-[12px] w-full h-full overflow-auto`}
             style={{ backgroundColor: 'var(--bg-page, #0a0a0a)' }}
         >
             {slots.map((index) => {
