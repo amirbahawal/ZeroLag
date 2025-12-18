@@ -108,6 +108,8 @@ export default defineConfig({
         target: 'https://fapi.binance.com',
         changeOrigin: true,
         secure: false,
+        timeout: 20000, // 20s timeout for incoming requests
+        proxyTimeout: 20000, // 20s timeout for proxy target connection
       },
     },
   },

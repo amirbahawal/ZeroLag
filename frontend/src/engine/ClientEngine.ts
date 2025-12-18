@@ -9,6 +9,7 @@ import { ClientBinanceProvider, defaultProvider } from '../data/clientProvider';
 import { CandleCache, defaultCandleCache } from '../data/candleCache';
 import { batchFetch } from '../data/batchFetch';
 import { useZeroLagStore } from '../state/useZeroLagStore';
+import { StateSyncManager } from './modules/StateSyncManager';
 import type { ZeroLagState } from '../state/useZeroLagStore';
 import type { Interval, SymbolMetrics, Candle, SymbolInfo } from '../core/types';
 import { KLINE_FETCH_LIMITS } from '../core/intervals';
@@ -16,7 +17,7 @@ import {
     computeSymbolMetrics,
 } from '../core/metrics';
 import { computeRankings, refreshRankings } from '../core/ranking';
-import type { Ticker24h } from '../data/binanceRest';
+import { type Ticker24h, determineActiveSymbols } from '../data/binanceRest';
 import type { SortMode } from '../core/types';
 
 /* =============================================
@@ -115,6 +116,9 @@ export class ClientEngine {
        CONSTRUCTOR
        ============================================= */
 
+    /** State Sync Manager for batched updates */
+    private stateSyncManager: StateSyncManager;
+
     /**
      * Create a new ClientEngine instance
      * 
@@ -127,7 +131,7 @@ export class ClientEngine {
     ) {
         this.provider = provider || defaultProvider;
         this.candleCache = candleCache || defaultCandleCache;
-
+        this.stateSyncManager = new StateSyncManager(this.store);
 
         console.log('[ClientEngine] Initialized');
     }
@@ -186,10 +190,8 @@ export class ClientEngine {
             const tickers = await this.provider.get24hTickers();
 
             // Map tickers and determine active symbols (USDT pairs with volume)
-            this.activeSymbols = tickers
-                .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 0)
-                .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
-                .map(t => t.symbol);
+            // Use helper to ensure consistent top 100 logic
+            this.activeSymbols = determineActiveSymbols(tickers);
 
             for (const ticker of tickers) {
                 if (ticker.symbol) {
@@ -506,9 +508,9 @@ export class ClientEngine {
         // 1. Update the internal buffer
         this.updateCandleBuffer(candle.symbol, candle.interval, candle);
 
-        // 2. Update store to trigger UI updates (ZeroLag live charts)
+        // 2. Queue update to store via StateSyncManager (batches updates at 60fps)
         const buffer = this.getBuffer(candle.symbol, candle.interval);
-        this.store.setCandlesForSymbol(candle.symbol, candle.interval, [...buffer]);
+        this.stateSyncManager.queueCandleUpdate(candle.symbol, candle.interval, [...buffer]);
 
         // 3. Schedule debounced metrics and rankings recomputation
         this.scheduleMetricsUpdate();
@@ -564,6 +566,19 @@ export class ClientEngine {
      */
     private onSortModeChange(newMode: SortMode): void {
         console.log(`[ClientEngine] Sort mode changed to ${newMode}`);
+
+        // Ensure required intervals for visible symbols
+        // We get visible symbols from the *current* rankings (which might be based on old data, but it's a good start)
+        // Or better, use the active symbols list if rankings aren't ready for this mode
+        const rankings = this.store.rankings[newMode] || [];
+        const visibleSymbols = rankings.length > 0
+            ? rankings.slice(0, this.store.count).map(r => r.info.symbol)
+            : this.activeSymbols.slice(0, this.store.count);
+
+        visibleSymbols.forEach(symbol => {
+            this.ensureRequiredIntervals(symbol, newMode).catch(console.error);
+        });
+
         this.syncSubscriptions();
     }
 
@@ -610,6 +625,9 @@ export class ClientEngine {
         const visibleSymbols = rankings.slice(0, this.store.count).map(r => r.info.symbol);
 
         const targetSubscriptions = new Set(visibleSymbols.map(s => `${s}:${interval}`));
+
+        // Update visible symbols in StateSyncManager
+        this.stateSyncManager.setVisibleSymbols(visibleSymbols);
 
         // 1. Unsubscribe from symbols no longer visible
         const toUnsubscribe = [...this.subscriptions].filter(sub => !targetSubscriptions.has(sub));
@@ -834,7 +852,7 @@ export class ClientEngine {
         }
 
         // Update store with all metrics at once (batch update)
-        this.store.setAllMetrics(allMetrics);
+        this.stateSyncManager.queueMetricsUpdate(allMetrics);
 
         // Get all metrics from store
         const state = useZeroLagStore.getState();
@@ -844,7 +862,7 @@ export class ClientEngine {
         const rankings = computeRankings(metricsBySymbol, state.symbols);
 
         // Update store with rankings
-        this.store.setRankings(rankings);
+        this.stateSyncManager.queueRankingsUpdate(rankings);
 
         console.log('[ClientEngine] Metrics and rankings updated ✓');
     }

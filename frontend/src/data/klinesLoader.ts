@@ -120,7 +120,7 @@ export async function loadKlinesForSymbols(
         const rawKlines = await provider.getKlines(symbol, interval, limit);
 
         // Parse to Candle objects
-        const candles = provider.parseKlinesToCandles(symbol, interval, rawKlines);
+        const candles = provider.parseKlinesToCandles(symbol, interval, rawKlines as any);
 
         // Store in cache
         cache.setCandlesForSymbol(symbol, interval, candles);

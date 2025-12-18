@@ -477,8 +477,13 @@ export function computeSymbolMetrics(
     const volume15m = computeVolumeMetric(candleBuffers.get('15m') || [], '15m', now);
     const volume4h = computeVolumeMetric(candleBuffers.get('4h') || [], '4h', now);
 
-    // 24h volume uses 1h candles (24 candles)
-    const volume24h = computeVolumeMetric(candleBuffers.get('1h') || [], '24h', now);
+    // 24h volume uses ticker data (as per spec 5.4.2)
+    // This ensures we have volume data even if 1h candles aren't loaded
+    const volume24h = {
+        window: '24h' as const,
+        base: parseFloat(ticker24h.volume),
+        quote: parseFloat(ticker24h.quoteVolume)
+    };
 
     const volume = {
         '15m': volume15m,

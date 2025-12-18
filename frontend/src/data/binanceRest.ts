@@ -6,7 +6,6 @@
  */
 
 import type { Interval, Candle, SymbolInfo } from '../core/types';
-import { useZeroLagStore } from '../state/useZeroLagStore';
 
 /* =============================================
    TYPES
@@ -79,7 +78,7 @@ export const BINANCE_FUTURES_BASE = 'https://fapi.binance.com';
 export const BASE_URL = import.meta.env.DEV ? '' : BINANCE_FUTURES_BASE;
 
 /** Retry delays for exponential backoff (milliseconds) */
-const RETRY_DELAYS = [1000, 2000, 5000]; // 1s, 2s, 5s
+const RETRY_DELAYS = [1000, 2000, 5000, 10000, 15000]; // More aggressive retries for unstable network
 
 /** Maximum number of retry attempts */
 const MAX_RETRIES = RETRY_DELAYS.length;
@@ -89,14 +88,21 @@ const MAX_RETRIES = RETRY_DELAYS.length;
    ============================================= */
 
 export class RestApiError extends Error {
+    public statusCode?: number;
+    public isTransient: boolean;
+    public response?: unknown;
+
     constructor(
         message: string,
-        public statusCode?: number,
-        public isTransient: boolean = false,
-        public response?: unknown
+        statusCode?: number,
+        isTransient: boolean = false,
+        response?: unknown
     ) {
         super(message);
         this.name = 'RestApiError';
+        this.statusCode = statusCode;
+        this.isTransient = isTransient;
+        this.response = response;
     }
 }
 
@@ -209,9 +215,6 @@ class RateLimitManager {
         this.retryCount++;
 
         console.warn(`[RateLimitManager] Rate limit hit! Backoff set to ${this.backoffMs}ms`);
-
-        // Update store status
-        useZeroLagStore.getState().setApiStatus('rate_limited');
     }
 
     /**
@@ -223,8 +226,6 @@ class RateLimitManager {
             this.isLimited = false;
             this.backoffMs = 15000;
             this.retryCount = 0;
-
-            useZeroLagStore.getState().setApiStatus('ok');
         }
     }
 }
@@ -297,10 +298,6 @@ async function fetchWithRetry(
         return response;
     } catch (error) {
         if (error instanceof RestApiError) {
-            // Update store status for fatal errors
-            if (!error.isTransient && error.statusCode !== 429) {
-                useZeroLagStore.getState().setApiStatus('error');
-            }
             throw error;
         }
 
@@ -316,7 +313,6 @@ async function fetchWithRetry(
         }
 
         // Final network failure
-        useZeroLagStore.getState().setApiStatus('error');
         throw new RestApiError(
             `Network error after ${MAX_RETRIES} retries: ${error instanceof Error ? error.message : 'Unknown error'}`,
             0, // Status 0 for network error
@@ -342,8 +338,6 @@ export async function fetchBinance<T>(endpoint: string, params?: Record<string, 
 
 /**
  * Fetch 24-hour ticker data for all symbols
- * 
- * Filters for USDT pairs with non-zero volume and sorts by volume descending.
  */
 export async function fetch24hTickers(): Promise<BinanceTicker24h[]> {
     try {
@@ -353,13 +347,8 @@ export async function fetch24hTickers(): Promise<BinanceTicker24h[]> {
             throw new RestApiError('Expected array of tickers');
         }
 
-        // Filter for USDT symbols with volume > 0 and sort by volume descending
-        const filtered = data
-            .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 0)
-            .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume));
-
-        console.log(`[Binance API] Fetched ${filtered.length} active USDT tickers (sorted by vol)`);
-        return filtered;
+        console.log(`[Binance API] Fetched ${data.length} tickers`);
+        return data;
     } catch (error) {
         console.error('[Binance API] Failed to fetch 24h tickers:', error);
         throw error;
@@ -411,25 +400,18 @@ export async function fetchExchangeInfo(): Promise<BinanceExchangeInfo> {
 /**
  * Get active USDT futures symbols
  * 
- * Fetches exchange info and filters for TRADING status and USDT quote asset.
- * Maps to internal SymbolInfo format.
+ * Fetches exchange info and maps to internal SymbolInfo format.
  */
 export async function getActiveSymbols(): Promise<SymbolInfo[]> {
     const info = await fetchExchangeInfo();
 
-    return info.symbols
-        .filter(s =>
-            s.status === 'TRADING' &&
-            s.quoteAsset === 'USDT' &&
-            s.contractType === 'PERPETUAL'
-        )
-        .map(s => ({
-            symbol: s.symbol,
-            baseAsset: s.baseAsset,
-            quoteAsset: s.quoteAsset,
-            marketType: 'futures',
-            status: s.status
-        }));
+    return info.symbols.map(s => ({
+        symbol: s.symbol,
+        baseAsset: s.baseAsset,
+        quoteAsset: s.quoteAsset,
+        marketType: 'futures',
+        status: s.status
+    }));
 }
 
 /**
@@ -602,6 +584,8 @@ export function parseExchangeSymbolToInfo(exchangeSymbol: BinanceSymbolInfo): Sy
 
 /**
  * Parse exchange info into SymbolInfo array.
+ * 
+ * NOTE: Domain-level helper. Not used internally by REST layer.
  */
 export function parseExchangeInfoToSymbols(exchangeInfo: BinanceExchangeInfo): SymbolInfo[] {
     return exchangeInfo.symbols
@@ -635,6 +619,8 @@ export function parseTickerMetrics(ticker: BinanceTicker24h) {
  * Determine active symbols from ticker data
  * 
  * Filters for USDT pairs with volume > 0, sorts by volume, and returns top 100.
+ * 
+ * NOTE: Domain-level helper. Not used internally by REST layer.
  */
 export function determineActiveSymbols(tickers: BinanceTicker24h[]): string[] {
     if (!Array.isArray(tickers)) {
