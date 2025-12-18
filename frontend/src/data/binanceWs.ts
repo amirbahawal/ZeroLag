@@ -6,6 +6,7 @@
  */
 
 import type { Interval, Candle } from '../core/types';
+import { useZeroLagStore } from '../state/useZeroLagStore';
 
 /* =============================================
    TYPES
@@ -24,9 +25,9 @@ interface Subscription {
     callbacks: Set<CandleCallback>;
 }
 
-/** Binance WebSocket kline event structure */
-interface BinanceKlineEvent {
-    e: string; // Event type
+/** Binance WebSocket kline message structure */
+export interface BinanceKlineMessage {
+    e: 'kline'; // Event type
     E: number; // Event time
     s: string; // Symbol
     k: {
@@ -50,19 +51,47 @@ interface BinanceKlineEvent {
     };
 }
 
+/**
+ * Parse kline message into Candle object
+ */
+export function parseKlineMessage(msg: BinanceKlineMessage): Candle {
+    if (!msg || !msg.k) {
+        throw new Error('Invalid kline message');
+    }
+
+    const kline = msg.k;
+
+    return {
+        symbol: kline.s,
+        interval: kline.i as Interval,
+        openTime: kline.t,
+        closeTime: kline.T,
+        open: parseFloat(kline.o),
+        high: parseFloat(kline.h),
+        low: parseFloat(kline.l),
+        close: parseFloat(kline.c),
+        volumeBase: parseFloat(kline.v),
+        volumeQuote: parseFloat(kline.q),
+        trades: kline.n,
+        isFinal: kline.x,
+    };
+}
+
 /* =============================================
    BINANCE WEBSOCKET MANAGER
    ============================================= */
 
-export class BinanceWsManager {
+export class BinanceWebSocketManager {
     private ws: WebSocket | null = null;
     private baseUrl = 'wss://fstream.binance.com/ws';
     private subscriptions = new Map<StreamKey, Subscription>();
+    private rawSubscriptions = new Set<string>(); // Track raw streams
+    private globalListeners = new Set<(candle: Candle) => void>(); // Global listeners
     private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
     private reconnectAttempts = 0;
     private maxReconnectAttempts = 10;
-    private baseReconnectDelay = 1000; // Start at 1 second
-    private maxReconnectDelay = 30000; // Max 30 seconds
+    private baseReconnectDelay = 5000; // Start at 5 seconds
+    private maxReconnectDelay = 60000; // Max 60 seconds
     private isConnecting = false;
     private shouldReconnect = true;
     private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
@@ -140,10 +169,10 @@ export class BinanceWsManager {
         }
 
         this.isConnecting = true;
+        this.shouldReconnect = true; // Reset flag
 
         try {
             // Connect to base endpoint
-            // We will subscribe to actual streams via messages
             const url = this.baseUrl;
 
             console.log('[Binance WS] Connecting to:', url);
@@ -180,14 +209,50 @@ export class BinanceWsManager {
     }
 
     /**
-     * Subscribe to a symbol's kline stream
+     * Helper to build stream name
      */
-    public async subscribe(
+    public buildStreamName(symbol: string, interval: Interval): string {
+        return `${symbol.toLowerCase()}@kline_${interval}`;
+    }
+
+    /**
+     * Subscribe to streams
+     * 
+     * Overload 1: Raw stream strings
+     * Overload 2: Symbol/Interval/Callback helper
+     */
+    public subscribe(streams: string[]): void;
+    public subscribe(symbol: string, interval: Interval, callback: CandleCallback): Promise<void>;
+    public subscribe(
+        arg1: string[] | string,
+        arg2?: Interval,
+        arg3?: CandleCallback
+    ): void | Promise<void> {
+        // Overload 1: Raw streams
+        if (Array.isArray(arg1)) {
+            const streams = arg1;
+            streams.forEach(s => this.rawSubscriptions.add(s));
+            this.sendSubscribe(streams);
+            return;
+        }
+
+        // Overload 2: Symbol/Interval/Callback
+        const symbol = arg1;
+        const interval = arg2!;
+        const callback = arg3!;
+
+        return this.subscribeToCandles(symbol, interval, callback);
+    }
+
+    /**
+     * Internal implementation for candle subscription
+     */
+    private async subscribeToCandles(
         symbol: string,
         interval: Interval,
         callback: CandleCallback
     ): Promise<void> {
-        const streamKey = this.getStreamKey(symbol, interval);
+        const streamKey = this.buildStreamName(symbol, interval);
         const subscription = this.subscriptions.get(streamKey);
 
         if (subscription) {
@@ -217,14 +282,58 @@ export class BinanceWsManager {
      * Add a listener for a symbol's kline stream
      */
     public on(symbol: string, interval: Interval, callback: CandleCallback): void {
-        this.subscribe(symbol, interval, callback).catch(console.error);
+        this.subscribe(symbol, interval, callback);
     }
 
     /**
-     * Unsubscribe from a symbol's kline stream
+     * Register a global listener for all kline events
+     * 
+     * Useful for metrics engines or loggers that need to see all traffic.
+     * 
+     * @param callback - Function to call with every parsed candle
+     * @returns Unsubscribe function
      */
-    public unsubscribe(symbol: string, interval: Interval, callback?: CandleCallback): void {
-        const streamKey = this.getStreamKey(symbol, interval);
+    public onKline(callback: (candle: Candle) => void): () => void {
+        this.globalListeners.add(callback);
+        return () => {
+            this.globalListeners.delete(callback);
+        };
+    }
+
+    /**
+     * Unsubscribe from streams
+     * 
+     * Overload 1: Raw stream strings
+     * Overload 2: Symbol/Interval/Callback helper
+     */
+    public unsubscribe(streams: string[]): void;
+    public unsubscribe(symbol: string, interval: Interval, callback?: CandleCallback): void;
+    public unsubscribe(
+        arg1: string[] | string,
+        arg2?: Interval,
+        arg3?: CandleCallback
+    ): void {
+        // Overload 1: Raw streams
+        if (Array.isArray(arg1)) {
+            const streams = arg1;
+            streams.forEach(s => this.rawSubscriptions.delete(s));
+            this.sendUnsubscribe(streams);
+            return;
+        }
+
+        // Overload 2: Symbol/Interval/Callback
+        const symbol = arg1;
+        const interval = arg2!;
+        const callback = arg3;
+
+        this.unsubscribeFromCandles(symbol, interval, callback);
+    }
+
+    /**
+     * Internal implementation for candle unsubscription
+     */
+    private unsubscribeFromCandles(symbol: string, interval: Interval, callback?: CandleCallback): void {
+        const streamKey = this.buildStreamName(symbol, interval);
         const subscription = this.subscriptions.get(streamKey);
 
         if (!subscription) {
@@ -255,7 +364,7 @@ export class BinanceWsManager {
     }
 
     /**
-     * Disconnect WebSocket
+     * Disconnect WebSocket and prevent auto-reconnect
      */
     public disconnect(): void {
         this.shouldReconnect = false;
@@ -273,13 +382,26 @@ export class BinanceWsManager {
         console.log('[Binance WS] Disconnected');
     }
 
+    /**
+     * Force reconnection
+     */
+    public reconnect(): void {
+        console.log('[Binance WS] Forcing reconnection...');
+        this.disconnect();
+        this.shouldReconnect = true; // Re-enable reconnect
+        this.connect().catch(console.error);
+    }
+
+    /**
+     * Close WebSocket connection
+     */
+    public close(): void {
+        this.disconnect();
+    }
+
     /* =============================================
        PRIVATE METHODS
        ============================================= */
-
-    private getStreamKey(symbol: string, interval: Interval): StreamKey {
-        return `${symbol.toLowerCase()}@kline_${interval}`;
-    }
 
     private batchSubscribe(streams: string[]): void {
         const BATCH_SIZE = 50;
@@ -323,13 +445,20 @@ export class BinanceWsManager {
         console.log('[Binance WS] Connection opened');
         this.isConnecting = false;
         this.reconnectAttempts = 0; // Reset on successful connection
+
+        // Update store state
+        useZeroLagStore.getState().setWsConnected(true);
+
         this.startHeartbeat();
 
-        // Subscribe to all pending streams
-        const streams = Array.from(this.subscriptions.keys());
-        if (streams.length > 0) {
-            console.log(`[Binance WS] Batch subscribing to ${streams.length} streams...`);
-            this.batchSubscribe(streams);
+        // Subscribe to all pending streams (both managed and raw)
+        const managedStreams = Array.from(this.subscriptions.keys());
+        const rawStreams = Array.from(this.rawSubscriptions);
+        const allStreams = [...new Set([...managedStreams, ...rawStreams])];
+
+        if (allStreams.length > 0) {
+            console.log(`[Binance WS] Batch subscribing to ${allStreams.length} streams...`);
+            this.batchSubscribe(allStreams);
         }
     }
 
@@ -341,41 +470,37 @@ export class BinanceWsManager {
             this.lastPongTime = Date.now();
 
             // Handle kline events
-            if (data.e === 'kline' || data.k) {
-                this.handleKlineEvent(data);
+            if (data.e === 'kline' && data.k) {
+                this.handleKlineEvent(data as BinanceKlineMessage);
             }
         } catch (error) {
             console.error('[Binance WS] Failed to parse message:', error);
         }
     }
 
-    private handleKlineEvent(event: BinanceKlineEvent): void {
-        const kline = event.k;
-        const streamKey = this.getStreamKey(kline.s, kline.i as Interval);
-        const subscription = this.subscriptions.get(streamKey);
+    private handleKlineEvent(event: BinanceKlineMessage): void {
+        try {
+            const candle = parseKlineMessage(event);
 
-        if (!subscription) {
-            return; // No subscription for this stream
+            // 1. Notify global listeners
+            this.globalListeners.forEach(listener => {
+                try {
+                    listener(candle);
+                } catch (e) {
+                    console.error('[Binance WS] Global listener error:', e);
+                }
+            });
+
+            // 2. Notify specific subscribers
+            const streamKey = this.buildStreamName(candle.symbol, candle.interval);
+            const subscription = this.subscriptions.get(streamKey);
+
+            if (subscription) {
+                subscription.callbacks.forEach(callback => callback(candle));
+            }
+        } catch (error) {
+            console.error('[Binance WS] Error handling kline event:', error);
         }
-
-        // Convert to our Candle type
-        const candle: Candle = {
-            symbol: kline.s,
-            interval: kline.i as Interval,
-            openTime: kline.t,
-            closeTime: kline.T,
-            open: parseFloat(kline.o),
-            high: parseFloat(kline.h),
-            low: parseFloat(kline.l),
-            close: parseFloat(kline.c),
-            volumeBase: parseFloat(kline.v),
-            volumeQuote: parseFloat(kline.q),
-            trades: kline.n,
-            isFinal: kline.x,
-        };
-
-        // Notify all callbacks
-        subscription.callbacks.forEach(callback => callback(candle));
     }
 
     private handleError(event: Event): void {
@@ -391,8 +516,11 @@ export class BinanceWsManager {
         this.isConnecting = false;
         this.stopHeartbeat();
 
+        // Update store state
+        useZeroLagStore.getState().setWsConnected(false);
+
         // Auto-reconnect if enabled with exponential backoff
-        if (this.shouldReconnect && this.subscriptions.size > 0) {
+        if (this.shouldReconnect && (this.subscriptions.size > 0 || this.rawSubscriptions.size > 0)) {
             if (this.reconnectAttempts >= this.maxReconnectAttempts) {
                 console.error('[Binance WS] Max reconnection attempts reached');
                 return;
@@ -418,4 +546,4 @@ export class BinanceWsManager {
    ============================================= */
 
 /** Default WebSocket manager instance */
-export const defaultWsManager = new BinanceWsManager();
+export const defaultWsManager = new BinanceWebSocketManager();

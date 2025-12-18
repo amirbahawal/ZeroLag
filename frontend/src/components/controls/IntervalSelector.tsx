@@ -1,8 +1,9 @@
 /**
  * IntervalSelector Component
  * 
- * Pill button group for selecting candlestick intervals.
+ * Compact pill button group for selecting candlestick intervals.
  * Displays all 6 intervals with active state highlighting.
+ * Slightly smaller than SortSelector for a more compact appearance.
  */
 
 import React from 'react';
@@ -17,7 +18,7 @@ export const IntervalSelector: React.FC = () => {
     const setInterval = useZeroLagStore((state) => state.setInterval);
 
     return (
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-1.5">
             {INTERVALS.map((int) => {
                 const isActive = interval === int;
 
@@ -25,27 +26,21 @@ export const IntervalSelector: React.FC = () => {
                     <button
                         key={int}
                         onClick={() => setInterval(int)}
-                        aria-label={`Select ${int} interval`}
-                        aria-pressed={isActive}
-                        className="px-4 py-2 rounded-lg font-semibold text-sm transition-smooth focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+                        className="px-2.5 py-1 rounded-full text-xs transition-all"
                         style={{
-                            backgroundColor: isActive
-                                ? 'var(--accent-blue)'
-                                : 'var(--bg-panel)',
-                            color: isActive ? '#ffffff' : 'var(--text-main)',
-                            border: `1px solid ${isActive ? 'var(--accent-blue)' : 'var(--border-subtle)'
-                                }`,
+                            backgroundColor: isActive ? 'var(--accent-blue, #3b82f6)' : 'transparent',
+                            color: isActive ? '#ffffff' : 'var(--text-muted, #9ca3af)',
+                            fontWeight: isActive ? 600 : 500,
+                            border: isActive ? 'none' : '1px solid var(--border-subtle, #374151)',
                         }}
                         onMouseEnter={(e) => {
                             if (!isActive) {
-                                e.currentTarget.style.backgroundColor = 'var(--bg-panel-soft)';
-                                e.currentTarget.style.borderColor = 'var(--accent-blue)';
+                                e.currentTarget.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.3)';
                             }
                         }}
                         onMouseLeave={(e) => {
                             if (!isActive) {
-                                e.currentTarget.style.backgroundColor = 'var(--bg-panel)';
-                                e.currentTarget.style.borderColor = 'var(--border-subtle)';
+                                e.currentTarget.style.boxShadow = 'none';
                             }
                         }}
                     >

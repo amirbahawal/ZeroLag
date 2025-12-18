@@ -2,7 +2,8 @@
  * CountSelector Component
  * 
  * Grid size selector for controlling how many chart cells to display.
- * Options: 4 (2x2), 9 (3x3), 16 (4x4), 25 (5x5)
+ * Options: 4 (2×2), 9 (3×3), 16 (4×4), 25 (5×5)
+ * Small square buttons (32×32px) positioned next to status indicators.
  */
 
 import React from 'react';
@@ -32,30 +33,26 @@ export const CountSelector: React.FC = () => {
                     <button
                         key={gridCount}
                         onClick={() => setCount(gridCount)}
-                        aria-label={`Show ${gridCount} charts (${GRID_LABELS[gridCount]} grid)`}
-                        aria-pressed={isActive}
-                        className="px-3 py-1.5 rounded-md font-semibold text-xs transition-smooth focus:outline-none focus-visible:ring-2 focus-visible:ring-cyan-400"
+                        className="w-8 h-8 flex items-center justify-center text-xs font-semibold transition-all rounded"
                         style={{
-                            backgroundColor: isActive
-                                ? 'var(--accent-cyan)'
-                                : 'var(--bg-panel)',
-                            color: isActive ? '#000000' : 'var(--text-muted)',
-                            border: `1px solid ${isActive ? 'var(--accent-cyan)' : 'var(--border-subtle)'
-                                }`,
+                            backgroundColor: isActive ? 'var(--bg-panel-soft, #1a1d21)' : 'transparent',
+                            color: isActive ? '#ffffff' : 'var(--text-muted, #9ca3af)',
+                            border: isActive
+                                ? '2px solid var(--accent-blue, #3b82f6)'
+                                : '1px solid var(--border-subtle, #374151)',
                         }}
                         onMouseEnter={(e) => {
                             if (!isActive) {
-                                e.currentTarget.style.backgroundColor = 'var(--bg-panel-soft)';
-                                e.currentTarget.style.color = 'var(--text-main)';
+                                e.currentTarget.style.borderColor = 'var(--accent-blue, #3b82f6)';
+                                e.currentTarget.style.color = '#ffffff';
                             }
                         }}
                         onMouseLeave={(e) => {
                             if (!isActive) {
-                                e.currentTarget.style.backgroundColor = 'var(--bg-panel)';
-                                e.currentTarget.style.color = 'var(--text-muted)';
+                                e.currentTarget.style.borderColor = 'var(--border-subtle, #374151)';
+                                e.currentTarget.style.color = 'var(--text-muted, #9ca3af)';
                             }
                         }}
-                        title={`${GRID_LABELS[gridCount]} grid`}
                     >
                         {GRID_LABELS[gridCount]}
                     </button>

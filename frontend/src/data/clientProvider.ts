@@ -6,7 +6,8 @@
  * for all Binance data operations.
  */
 
-import type { Interval, Candle } from '../core/types';
+import type { Interval, Candle, SymbolInfo } from '../core/types';
+import { useZeroLagStore } from '../state/useZeroLagStore';
 import {
     fetch24hTickers,
     fetchExchangeInfo,
@@ -21,10 +22,24 @@ import {
     type ExchangeSymbol,
 } from './binanceRest';
 import {
-    BinanceWsManager,
+    BinanceWebSocketManager,
     defaultWsManager,
     type CandleCallback,
 } from './binanceWs';
+
+/* =============================================
+   TYPES
+   ============================================= */
+
+export type ApiStatus = 'ok' | 'error' | 'loading';
+
+export interface DataProvider {
+    getUniverse(): Promise<SymbolInfo[]>;
+    get24hTickers(): Promise<Ticker24h[]>;
+    getHistoricalCandles(symbol: string, interval: Interval, limit: number): Promise<Candle[]>;
+    subscribeToKlines(symbol: string, interval: Interval, callback: (candle: Candle) => void): () => void;
+    getConnectionStatus(): { rest: ApiStatus; ws: boolean };
+}
 
 /* =============================================
    CLIENT PROVIDER CLASS
@@ -36,8 +51,8 @@ import {
  * Combines REST API calls and WebSocket subscriptions into a single
  * unified interface for the application to use.
  */
-export class ClientBinanceProvider {
-    private wsManager: BinanceWsManager;
+export class ClientBinanceProvider implements DataProvider {
+    private wsManager: BinanceWebSocketManager;
 
     /** Number of currently active kline requests */
     private activeRequests: number = 0;
@@ -48,13 +63,101 @@ export class ClientBinanceProvider {
     /** Queue of pending requests waiting for slot */
     private requestQueue: Array<() => void> = [];
 
+    /** Current REST API status */
+    private restStatus: ApiStatus = 'ok';
+
+    /** Cached universe data */
+    private universeCache: SymbolInfo[] | null = null;
+
+    /** Timestamp of last universe cache update */
+    private universeCacheTime: number = 0;
+
+    /** Universe cache TTL (5 minutes) */
+    private readonly UNIVERSE_CACHE_TTL = 5 * 60 * 1000;
+
     /**
      * Create a new Binance provider instance
      * 
      * @param wsManager - Optional custom WebSocket manager (uses default if not provided)
      */
-    constructor(wsManager?: BinanceWsManager) {
+    constructor(wsManager?: BinanceWebSocketManager) {
         this.wsManager = wsManager || defaultWsManager;
+    }
+
+    /* =============================================
+       DATA PROVIDER IMPLEMENTATION
+       ============================================= */
+
+    public async getUniverse(): Promise<SymbolInfo[]> {
+        // Check cache validity
+        const now = Date.now();
+        if (this.universeCache && (now - this.universeCacheTime < this.UNIVERSE_CACHE_TTL)) {
+            return this.universeCache;
+        }
+
+        try {
+            const info = await this.getExchangeInfo();
+
+            // Filter to USDT futures with TRADING status
+            const filteredSymbols = info.symbols
+                .filter((s: any) =>
+                    s.quoteAsset === 'USDT' &&
+                    s.status === 'TRADING'
+                ) as unknown as SymbolInfo[];
+
+            // Update cache
+            this.universeCache = filteredSymbols;
+            this.universeCacheTime = now;
+            this.restStatus = 'ok';
+
+            return filteredSymbols;
+        } catch (e) {
+            this.restStatus = 'error';
+            throw e;
+        }
+    }
+
+    public async getHistoricalCandles(symbol: string, interval: Interval, limit: number): Promise<Candle[]> {
+        // Validate inputs
+        if (!symbol || typeof symbol !== 'string') {
+            console.error('[ClientProvider] Invalid symbol:', symbol);
+            return [];
+        }
+
+        if (!interval) {
+            console.error('[ClientProvider] Invalid interval:', interval);
+            return [];
+        }
+
+        if (!limit || limit <= 0 || limit > 1500) {
+            console.error('[ClientProvider] Invalid limit:', limit);
+            return [];
+        }
+
+        try {
+            // Use queued method which respects rate limiting via concurrency controller
+            const candles = await this.getKlinesQueued(symbol, interval, limit);
+            this.restStatus = 'ok';
+
+            return candles;
+        } catch (e) {
+            this.restStatus = 'error';
+            console.error(`[ClientProvider] Failed to fetch candles for ${symbol} ${interval}:`, e);
+            // Return empty array instead of throwing to prevent cascading failures
+            return [];
+        }
+    }
+
+    public subscribeToKlines(symbol: string, interval: Interval, callback: (candle: Candle) => void): () => void {
+        this.wsManager.on(symbol, interval, callback);
+        return () => this.wsManager.off(symbol, interval, callback);
+    }
+
+    public getConnectionStatus(): { rest: ApiStatus; ws: boolean } {
+        return {
+            rest: this.restStatus,
+            ws: useZeroLagStore.getState().wsConnected
+        };
     }
 
     /* =============================================
@@ -72,7 +175,46 @@ export class ClientBinanceProvider {
      * const btcTicker = tickers.find(t => t.symbol === 'BTCUSDT');
      */
     public async get24hTickers(): Promise<Ticker24h[]> {
-        return fetch24hTickers();
+        try {
+            const rawTickers = await fetch24hTickers();
+
+            // Get universe to filter valid symbols
+            const universe = await this.getUniverse();
+            const validSymbols = new Set(universe.map(s => s.symbol));
+
+            // Map to internal format with number types and filter by universe
+            const processedTickers = rawTickers
+                .filter(t => validSymbols.has(t.symbol))
+                .map(t => ({
+                    symbol: t.symbol,
+                    volume24h: parseFloat(t.volume),
+                    quoteVolume24h: parseFloat(t.quoteVolume),
+                    high24h: parseFloat(t.highPrice),
+                    low24h: parseFloat(t.lowPrice),
+                    lastPrice: parseFloat(t.lastPrice),
+                    // Keep additional fields for compatibility
+                    priceChange: t.priceChange,
+                    priceChangePercent: t.priceChangePercent,
+                    weightedAvgPrice: t.weightedAvgPrice,
+                    lastQty: t.lastQty,
+                    openPrice: t.openPrice,
+                    highPrice: t.highPrice,
+                    lowPrice: t.lowPrice,
+                    volume: t.volume,
+                    quoteVolume: t.quoteVolume,
+                    openTime: t.openTime,
+                    closeTime: t.closeTime,
+                    firstId: t.firstId,
+                    lastId: t.lastId,
+                    count: t.count,
+                })) as unknown as Ticker24h[];
+
+            this.restStatus = 'ok';
+            return processedTickers;
+        } catch (e) {
+            this.restStatus = 'error';
+            throw e;
+        }
     }
 
     /**
@@ -109,7 +251,7 @@ export class ClientBinanceProvider {
         symbol: string,
         interval: Interval,
         limit: number
-    ): Promise<RawKline[]> {
+    ): Promise<Candle[]> {
         return fetchKlines(symbol, interval, limit);
     }
 
@@ -147,7 +289,7 @@ export class ClientBinanceProvider {
         symbol: string,
         interval: Interval,
         limit: number
-    ): Promise<RawKline[]> {
+    ): Promise<Candle[]> {
         // Wait for a slot to become available
         await this.acquireSlot();
 
@@ -158,6 +300,16 @@ export class ClientBinanceProvider {
             // Always release the slot, even if request fails
             this.releaseSlot();
         }
+    }
+
+    /**
+     * Register a global listener for all kline events
+     * 
+     * @param callback - Function to call with every parsed candle
+     * @returns Unsubscribe function
+     */
+    public onKline(callback: (candle: Candle) => void): () => void {
+        return this.wsManager.onKline(callback);
     }
 
     /**
@@ -213,6 +365,7 @@ export class ClientBinanceProvider {
     public async testConnection(): Promise<boolean> {
         return testConnectivity();
     }
+
 
     /* =============================================
        WEBSOCKET METHODS
@@ -272,6 +425,7 @@ export class ClientBinanceProvider {
     public disconnectWebSocket(): void {
         this.wsManager.disconnect();
     }
+
 
     /* =============================================
        UTILITY METHODS

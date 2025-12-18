@@ -1,3 +1,11 @@
+/**
+ * ChartGrid Component
+ * 
+ * Responsive grid layout for displaying chart cells.
+ * Automatically adjusts grid template based on count (4, 9, 16, or 25).
+ * Shows ChartCell for loaded data, ChartSkeleton while loading.
+ */
+
 import React, { useMemo } from 'react';
 import { useZeroLagStore, useVisibleSymbols } from '../../state/useZeroLagStore';
 import { ChartCell } from './ChartCell';
@@ -7,7 +15,7 @@ export const ChartGrid: React.FC = () => {
     const count = useZeroLagStore(state => state.count);
     const visibleSymbols = useVisibleSymbols();
 
-    // Calculate grid columns based on count
+    // Calculate grid columns/rows based on count
     const gridClass = useMemo(() => {
         switch (count) {
             case 4: return 'grid-cols-2 grid-rows-2';
@@ -24,7 +32,10 @@ export const ChartGrid: React.FC = () => {
     }, [count]);
 
     return (
-        <div className={`grid ${gridClass} w-full h-full bg-gray-900`}>
+        <div
+            className={`grid ${gridClass} gap-3.5 w-full h-full overflow-auto`}
+            style={{ backgroundColor: 'var(--bg-page, #0a0a0a)' }}
+        >
             {slots.map((index) => {
                 const entry = visibleSymbols[index];
 

@@ -13,13 +13,32 @@ import type { ZeroLagState } from '../state/useZeroLagStore';
 import type { Interval, SymbolMetrics, Candle, SymbolInfo } from '../core/types';
 import { KLINE_FETCH_LIMITS } from '../core/intervals';
 import {
-    computeRangeMetric,
-    computeVolumeMetric,
-    computeDailyExtremumMetric,
-    computeGrowthMetric,
+    computeSymbolMetrics,
 } from '../core/metrics';
 import { computeRankings, refreshRankings } from '../core/ranking';
 import type { Ticker24h } from '../data/binanceRest';
+import type { SortMode } from '../core/types';
+
+/* =============================================
+   CONSTANTS
+   ============================================= */
+
+/**
+ * Required intervals for each sort mode
+ * 
+ * Maps each sort mode to the intervals it needs for metric computation.
+ * Empty arrays indicate the mode uses ticker data only.
+ */
+const REQUIRED_INTERVALS: Record<SortMode, Interval[]> = {
+    'range_5m': ['5m'],
+    'range_15m': ['15m'],
+    'range_1h': ['1h'],
+    'range_4h': ['4h'],
+    'dext': [],  // uses ticker data
+    'volume_15m': ['15m'],
+    'volume_24h': [],  // uses ticker data
+    'gvolume': ['15m', '4h']
+};
 
 /* =============================================
    CLIENT ENGINE CLASS
@@ -49,6 +68,19 @@ export class ClientEngine {
     /** Candle storage cache */
     private candleCache: CandleCache;
 
+    /** Nested Map for candle buffers: symbol -> interval -> Candle[] */
+    private candleBuffers: Map<string, Map<Interval, Candle[]>> = new Map();
+
+    /** Maximum candles to store per buffer */
+    private readonly MAX_CANDLES_PER_BUFFER: Record<Interval, number> = {
+        '1m': 500,
+        '5m': 500,
+        '15m': 500,
+        '1h': 500,
+        '4h': 500,
+        '1d': 500
+    };
+
     /** Zustand store instance */
     /** Zustand store instance */
     private get store(): ZeroLagState {
@@ -61,6 +93,9 @@ export class ClientEngine {
     /** Map of 24h ticker data */
     private tickerMap = new Map<string, Ticker24h>();
 
+    /** Currently subscribed symbols (symbol:interval) */
+    private subscriptions = new Set<string>();
+
     /** Periodic update timer */
     private updateInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -69,6 +104,12 @@ export class ClientEngine {
 
     /** Update interval duration (milliseconds) */
     private readonly UPDATE_INTERVAL_MS = 30000; // 30 seconds
+
+    /** Debounced metrics update timer */
+    private metricsUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Metrics update debounce interval (milliseconds) */
+    private readonly METRICS_UPDATE_INTERVAL = 2000; // 2 seconds
 
     /* =============================================
        CONSTRUCTOR
@@ -111,63 +152,135 @@ export class ClientEngine {
             return;
         }
 
-        console.log('[ClientEngine] Starting...');
+        this.isRunning = true;
+        try {
+            await this.init();
+        } catch (error) {
+            this.isRunning = false;
+            throw error;
+        }
+    }
+
+    /**
+     * Initialize the engine
+     * 
+     * Runs the complete bootstrap pipeline:
+     * 1. Update store: set loading state
+     * 2. Fetch 24h tickers → determine active symbols → update store
+     * 3. Fetch exchange info → build symbol map → update store
+     * 4. Seed candles for visible symbols → update store progressively
+     * 5. Connect WebSocket → subscribe to visible symbols → update store
+     * 6. Background: seed remaining symbols
+     * 7. Start metrics update timer
+     */
+    public async init(): Promise<void> {
+        console.log('[ClientEngine] Initializing bootstrap pipeline...');
 
         try {
-            // Set API status to loading
+            // 1. Update store: set loading state
             this.store.setApiStatus('loading');
+            this.store.setBootstrapProgress(0, 'Starting bootstrap...');
 
-            // Test connectivity
-            console.log('[ClientEngine] Testing connectivity...');
-            const isConnected = await this.provider.testConnection();
+            // 2. Fetch 24h tickers → determine active symbols → update store
+            this.store.setBootstrapProgress(5, 'Fetching 24h tickers...');
+            const tickers = await this.provider.get24hTickers();
 
-            if (!isConnected) {
-                throw new Error('Failed to connect to Binance API');
+            // Map tickers and determine active symbols (USDT pairs with volume)
+            this.activeSymbols = tickers
+                .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 0)
+                .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
+                .map(t => t.symbol);
+
+            for (const ticker of tickers) {
+                if (ticker.symbol) {
+                    this.tickerMap.set(ticker.symbol, ticker);
+                }
             }
 
-            console.log('[ClientEngine] Connectivity test passed ✓');
+            this.store.setActiveSymbols(this.activeSymbols);
+            console.log(`[ClientEngine] Identified ${this.activeSymbols.length} active symbols`);
 
-            // Initialize symbols (and initial rankings)
-            console.log('[ClientEngine] Step 1: Initialize symbols...');
-            await this.initializeSymbols();
-            console.log('[ClientEngine] Step 1: Complete');
+            // 3. Fetch exchange info → build symbol map → update store
+            this.store.setBootstrapProgress(15, 'Fetching exchange info...');
+            const exchangeInfo = await this.provider.getExchangeInfo();
+            const futuresSymbols = this.provider.filterFuturesUSDTSymbols(exchangeInfo.symbols);
 
-            // Start WebSocket connections first to capture live data
-            console.log('[ClientEngine] Step 2: Start WebSocket...');
-            await this.startWebSocket();
-            console.log('[ClientEngine] Step 2: Complete');
+            const symbolRecord: Record<string, SymbolInfo> = {};
+            futuresSymbols.forEach(s => {
+                if (this.activeSymbols.includes(s.symbol)) {
+                    symbolRecord[s.symbol] = {
+                        symbol: s.symbol,
+                        baseAsset: s.baseAsset,
+                        quoteAsset: s.quoteAsset,
+                        marketType: 'futures',
+                        status: s.status
+                    };
+                }
+            });
+            this.store.setSymbols(symbolRecord);
 
-            // Fetch historical data for VISIBLE symbols first (Top 16)
-            console.log('[ClientEngine] Step 3: Fetch visible klines (Top 16)...');
-            const visibleSymbols = this.activeSymbols.slice(0, 16);
-            const backgroundSymbols = this.activeSymbols.slice(16);
+            // Initialize rankings with placeholder metrics so UI can render skeletons
+            this.initializePlaceholderMetrics(symbolRecord);
 
-            await this.fetchHistoricalKlines(visibleSymbols, 'Visible');
-            console.log('[ClientEngine] Step 3: Complete');
+            // 4. Seed candles for visible symbols → update store progressively
+            this.store.setBootstrapProgress(30, 'Seeding visible candles...');
+            const visibleCount = this.store.count; // e.g., 16
+            const visibleSymbols = this.activeSymbols.slice(0, visibleCount);
+            const backgroundSymbols = this.activeSymbols.slice(visibleCount);
 
-            // Fetch remaining symbols in background
-            console.log('[ClientEngine] Step 4: Background enrichment...');
-            this.fetchHistoricalKlines(backgroundSymbols, 'Background')
-                .catch(err => console.error('[ClientEngine] Background fetch failed:', err));
-            console.log('[ClientEngine] Step 4: Started (background)');
+            await this.seedCandleBuffers(visibleSymbols, this.store.interval, 30, 60);
 
-            // Setup store change listeners
+            // 5. Connect WebSocket → subscribe to visible symbols → update store
+            this.store.setBootstrapProgress(70, 'Connecting to WebSocket...');
+            await this.provider.connectWebSocket();
+            this.store.setWsConnected(true);
+
+            console.log(`[ClientEngine] Subscribing to ${visibleSymbols.length} visible symbols...`);
+            for (const symbol of visibleSymbols) {
+                await this.provider.subscribeCandles(
+                    symbol,
+                    this.store.interval,
+                    () => { } // Global onKline listener handles the data
+                );
+                this.subscriptions.add(`${symbol}:${this.store.interval}`);
+            }
+
+            // 6. Background: seed remaining symbols and subscribe
+            this.store.setBootstrapProgress(85, 'Enriching background data...');
+            this.seedCandleBuffers(backgroundSymbols, this.store.interval, 85, 95)
+                .then(async () => {
+                    console.log(`[ClientEngine] Subscribing to ${backgroundSymbols.length} background symbols...`);
+                    // Subscribe in small batches to avoid overwhelming WS
+                    for (let i = 0; i < backgroundSymbols.length; i += 10) {
+                        const batch = backgroundSymbols.slice(i, i + 10);
+                        await Promise.all(batch.map(symbol => {
+                            this.subscriptions.add(`${symbol}:${this.store.interval}`);
+                            return this.provider.subscribeCandles(
+                                symbol,
+                                this.store.interval,
+                                () => { } // Global onKline listener handles the data
+                            );
+                        }));
+                        await new Promise(r => setTimeout(r, 100));
+                    }
+                    this.store.setBootstrapProgress(100, 'Ready');
+                })
+                .catch(err => console.error('[ClientEngine] Background enrichment failed:', err));
+
+            // 7. Register global kline listener
+            this.provider.onKline(this.handleCandleUpdate.bind(this));
+
+            // 8. Start metrics update timer
+            this.startPeriodicUpdates();
             this.handleStoreChanges();
 
-            // Set API status to ok
             this.store.setApiStatus('ok');
+            console.log('[ClientEngine] Bootstrap complete ✓');
 
-            // Mark as running
-            this.isRunning = true;
-
-            // Start periodic updates
-            this.startPeriodicUpdates();
-
-            console.log('[ClientEngine] Started successfully ✓');
         } catch (error) {
-            console.error('[ClientEngine] Failed to start:', error);
+            console.error('[ClientEngine] Bootstrap failed:', error);
             this.store.setApiStatus('error');
-            this.isRunning = false;
+            this.store.setBootstrapProgress(0, 'Error during initialization');
             throw error;
         }
     }
@@ -204,6 +317,21 @@ export class ClientEngine {
         console.log('[ClientEngine] Stopped ✓');
     }
 
+    /**
+     * Schedule a debounced metrics update
+     * 
+     * Limits recomputation to once every METRICS_UPDATE_INTERVAL.
+     */
+    public scheduleMetricsUpdate(): void {
+        if (this.metricsUpdateTimer === null) {
+            this.metricsUpdateTimer = setTimeout(() => {
+                this.recomputeAllMetrics();
+                this.metricsUpdateTimer = null;
+            }, this.METRICS_UPDATE_INTERVAL);
+        }
+    }
+
+
     /* =============================================
        INITIALIZATION METHODS
        ============================================= */
@@ -215,183 +343,157 @@ export class ClientEngine {
      * 
      * @throws {Error} If fetching exchange info fails
      */
-    private async initializeSymbols(): Promise<void> {
-        console.log('[ClientEngine] Initializing symbols...');
+    /**
+     * Initialize placeholder metrics for symbols
+     * 
+     * Allows the UI to render skeletons with basic 24h data while candles load.
+     */
+    private initializePlaceholderMetrics(symbolRecord: Record<string, SymbolInfo>): void {
+        const now = Date.now();
+        const initialMetrics: Record<string, SymbolMetrics> = {};
 
-        try {
-            // Fetch exchange info
-            const exchangeInfo = await this.provider.getExchangeInfo();
+        this.activeSymbols.forEach(symbol => {
+            const ticker = this.tickerMap.get(symbol);
+            const volume24h = ticker && ticker.quoteVolume ? parseFloat(ticker.quoteVolume) : 0;
+            const change24h = ticker && ticker.priceChangePercent ? parseFloat(ticker.priceChangePercent) : 0;
+            const lastPrice = ticker && ticker.lastPrice ? parseFloat(ticker.lastPrice) : 0;
 
-            // Filter for USDT perpetual futures
-            const futuresSymbols = this.provider.filterFuturesUSDTSymbols(
-                exchangeInfo.symbols
-            );
-
-            console.log(
-                `[ClientEngine] Found ${futuresSymbols.length} USDT perpetual futures`
-            );
-
-            // Fetch 24h tickers to get volume data
-            const tickers = await this.provider.get24hTickers();
-
-            // Create map of symbol -> 24h quote volume
-            const volumeMap = new Map<string, number>();
-            for (const ticker of tickers) {
-                if (ticker.symbol) {
-                    this.tickerMap.set(ticker.symbol, ticker);
-                    if (ticker.quoteVolume) {
-                        volumeMap.set(ticker.symbol, parseFloat(ticker.quoteVolume));
+            initialMetrics[symbol] = {
+                symbol,
+                marketType: 'futures',
+                lastPrice,
+                lastUpdateTs: now,
+                change24h,
+                ranges: {
+                    '5m': { window: '5m', high: 0, low: 0, abs: 0, pct: 0 },
+                    '15m': { window: '15m', high: 0, low: 0, abs: 0, pct: 0 },
+                    '1h': { window: '1h', high: 0, low: 0, abs: 0, pct: 0 },
+                    '4h': { window: '4h', high: 0, low: 0, abs: 0, pct: 0 },
+                },
+                volume: {
+                    '15m': { window: '15m', base: 0, quote: 0 },
+                    '4h': { window: '4h', base: 0, quote: 0 },
+                    '24h': { window: '24h', base: 0, quote: volume24h },
+                },
+                growth: {
+                    gVolume: {
+                        currentWindow: '15m',
+                        baselineWindow: '4h',
+                        baselinePer15m: 0,
+                        current: 0,
+                        ratio: 0,
+                        delta: 0
                     }
-                }
-            }
-
-            // Filter and sort symbols by volume
-            const symbolsWithVolume = futuresSymbols
-                .map((s) => ({
-                    symbol: s.symbol,
-                    volume: volumeMap.get(s.symbol) || 0,
-                }))
-                .filter((s) => s.volume > 0)
-                .sort((a, b) => b.volume - a.volume);
-
-            // Use all active symbols (no limit)
-            this.activeSymbols = symbolsWithVolume.map((s) => s.symbol);
-
-            // Update store
-            this.store.setActiveSymbols(this.activeSymbols);
-
-            // Store full symbol info in store
-            const symbolInfos = futuresSymbols
-                .filter((s) => this.activeSymbols.includes(s.symbol))
-                .map((s) => ({
-                    symbol: s.symbol,
-                    baseAsset: s.baseAsset,
-                    quoteAsset: s.quoteAsset,
-                    marketType: 'futures' as const,
-                    status: s.status,
-                }));
-
-            const symbolRecord: Record<string, SymbolInfo> = {};
-            symbolInfos.forEach(s => {
-                symbolRecord[s.symbol] = s;
-            });
-
-            this.store.setSymbols(symbolRecord);
-
-            // INITIALIZE RANKINGS
-            // We need to populate rankings immediately so the UI knows which symbols to show (as skeletons)
-            // while we fetch the candle data.
-
-            // Create initial metrics with just 24h volume/change data
-            const initialMetrics: Record<string, SymbolMetrics> = {};
-            const now = Date.now();
-
-            this.activeSymbols.forEach(symbol => {
-                const ticker = this.tickerMap.get(symbol);
-                const volume24h = ticker && ticker.quoteVolume ? parseFloat(ticker.quoteVolume) : 0;
-                const change24h = ticker && ticker.priceChangePercent ? parseFloat(ticker.priceChangePercent) : 0;
-                const lastPrice = ticker && ticker.lastPrice ? parseFloat(ticker.lastPrice) : 0;
-
-                initialMetrics[symbol] = {
-                    symbol,
-                    marketType: 'futures',
+                },
+                dailyExtremum: {
+                    high24h: 0,
+                    low24h: 0,
                     lastPrice,
-                    lastUpdateTs: now,
-                    change24h,
-                    ranges: { // Placeholders until candles load
-                        '5m': { window: '5m', high: 0, low: 0, abs: 0, pct: 0 },
-                        '15m': { window: '15m', high: 0, low: 0, abs: 0, pct: 0 },
-                        '1h': { window: '1h', high: 0, low: 0, abs: 0, pct: 0 },
-                        '4h': { window: '4h', high: 0, low: 0, abs: 0, pct: 0 },
-                    },
-                    volume: {
-                        '15m': { window: '15m', base: 0, quote: 0 },
-                        '4h': { window: '4h', base: 0, quote: 0 },
-                        '24h': { window: '24h', base: 0, quote: volume24h }, // We have this!
-                    },
-                    growth: {
-                        gVolume: {
-                            currentWindow: '15m',
-                            baselineWindow: '4h',
-                            baselinePer15m: 0,
-                            current: 0,
-                            ratio: 0,
-                            delta: 0
-                        }
-                    },
-                    dailyExtremum: {
-                        high24h: 0,
-                        low24h: 0,
-                        lastPrice,
-                        distToHighPct: 0,
-                        distToLowPct: 0,
-                        nearestSide: 'none',
-                        score: 0
-                    },
-                    currentSortScore: 0
-                };
+                    distToHighPct: 0,
+                    distToLowPct: 0,
+                    nearestSide: 'none',
+                    score: 0
+                },
+                currentSortScore: 0
+            };
+        });
 
-                // Update store with initial metrics
-                this.store.upsertMetrics(symbol, initialMetrics[symbol]);
-            });
+        this.store.setAllMetrics(initialMetrics);
 
-            // Compute initial rankings
-            const rankings = computeRankings(initialMetrics, symbolRecord);
-            this.store.setRankings(rankings);
-
-            console.log(
-                `[ClientEngine] Initialized ${this.activeSymbols.length} active symbols with rankings ✓`
-            );
-            console.log(
-                `[ClientEngine] Top 10: ${this.activeSymbols.slice(0, 10).join(', ')}`
-            );
-        } catch (error) {
-            console.error('[ClientEngine] Failed to initialize symbols:', error);
-            throw error;
-        }
+        const rankings = computeRankings(initialMetrics, symbolRecord);
+        this.store.setRankings(rankings);
     }
 
     /**
-     * Start WebSocket connections and subscribe to candle streams
+     * Seed candle buffers with historical data
      * 
-     * Connects to WebSocket and subscribes to all active symbols.
+     * Loads historical candles for all symbols with:
+     * - Priority loading for visible symbols first
+     * - Batch processing (4 concurrent max)
+     * - Delay between batches (1000ms)
+     * - Progress events for UI updates
+     * - Error handling that continues on individual failures
+     * 
+     * @param symbols - Array of symbols to load
+     * @param interval - Candlestick interval to load
      */
-    private async startWebSocket(): Promise<void> {
-        console.log('[ClientEngine] Starting WebSocket...');
+    private async seedCandleBuffers(
+        symbols: string[],
+        interval: Interval,
+        startProgress: number = 0,
+        endProgress: number = 100
+    ): Promise<void> {
+        if (symbols.length === 0) return;
 
-        try {
-            // Connect to WebSocket
-            await this.provider.connectWebSocket();
+        console.log(`[ClientEngine] Seeding candle buffers for ${symbols.length} symbols at ${interval}...`);
 
-            // Get current interval
-            const interval = this.store.interval;
+        const limit = KLINE_FETCH_LIMITS[interval];
+        const batchSize = 4; // Max concurrent requests
+        const batchDelay = 100; // 100ms between batches
 
-            // Subscribe to candle updates for each symbol
-            console.log(`[ClientEngine] Subscribing to ${this.activeSymbols.length} symbols...`);
+        let completed = 0;
+        let failed = 0;
 
-            for (const symbol of this.activeSymbols) {
+        // Process in batches
+        for (let i = 0; i < symbols.length; i += batchSize) {
+            const batch = symbols.slice(i, i + batchSize);
+            const batchCandles: Record<string, Candle[]> = {};
+            const batchMetrics: Record<string, SymbolMetrics> = {};
+
+            // Fetch batch concurrently
+            const promises = batch.map(async (symbol: string) => {
                 try {
-                    await this.provider.subscribeCandles(
-                        symbol,
-                        interval,
-                        this.handleCandleUpdate.bind(this)
-                    );
+                    const candles = await this.provider.getHistoricalCandles(symbol, interval, limit);
+
+                    if (candles.length > 0) {
+                        // Store in buffer
+                        this.setBuffer(symbol, interval, candles);
+
+                        // Also update the candleCache for compatibility
+                        this.candleCache.setCandlesForSymbol(symbol, interval, candles);
+
+                        // Collect for batch update
+                        batchCandles[`${symbol}:${interval}`] = candles;
+
+                        // Compute initial metrics
+                        const metrics = this.computeMetricsForSymbol(symbol);
+                        if (metrics) {
+                            batchMetrics[symbol] = metrics;
+                        }
+
+                        completed++;
+                    }
                 } catch (error) {
-                    console.error(`[ClientEngine] Failed to subscribe to ${symbol}:`, error);
-                    // Continue with other symbols
+                    console.error(`[ClientEngine] Failed to seed candles for ${symbol}:`, error);
+                    failed++;
                 }
+            });
+
+            // Wait for batch to complete
+            await Promise.all(promises);
+
+            // Batch update store
+            if (Object.keys(batchCandles).length > 0) {
+                this.store.setAllCandles(batchCandles);
+            }
+            if (Object.keys(batchMetrics).length > 0) {
+                this.store.setAllMetrics(batchMetrics);
             }
 
-            // Mark as connected
-            this.store.setWsConnected(true);
+            // Update progress
+            const progressRange = endProgress - startProgress;
+            const currentProgress = startProgress + Math.round((completed / symbols.length) * progressRange);
+            this.store.setBootstrapProgress(currentProgress);
 
-            console.log('[ClientEngine] WebSocket connected and subscribed ✓');
-        } catch (error) {
-            console.error('[ClientEngine] Failed to start WebSocket:', error);
-            // Don't throw - WebSocket is optional
-            this.store.setWsConnected(false);
+            // Delay before next batch
+            if (i + batchSize < symbols.length) {
+                await new Promise(resolve => setTimeout(resolve, batchDelay));
+            }
         }
+
+        console.log(`[ClientEngine] Candle seeding complete: ${completed} succeeded, ${failed} failed`);
     }
+
 
     /**
      * Handle incoming candle update from WebSocket
@@ -401,138 +503,145 @@ export class ClientEngine {
      * @param candle - Updated candle data
      */
     private handleCandleUpdate(candle: Candle): void {
-        // Update candle in cache
-        this.candleCache.updateCandle(candle.symbol, candle.interval, candle);
+        // 1. Update the internal buffer
+        this.updateCandleBuffer(candle.symbol, candle.interval, candle);
 
-        // Update store to trigger UI updates
-        // We need to get the full array from cache to update the store
-        const updatedCandles = this.candleCache.getCandlesForSymbol(candle.symbol, candle.interval);
+        // 2. Update store to trigger UI updates (ZeroLag live charts)
+        const buffer = this.getBuffer(candle.symbol, candle.interval);
+        this.store.setCandlesForSymbol(candle.symbol, candle.interval, [...buffer]);
 
-        // Create a new array reference to ensure Zustand detects the change
-        // optimization: only do this if we really need to (e.g. maybe throttle this?)
-        // For now, we do it every tick for "ZeroLag" experience
-        this.store.setCandlesForSymbol(candle.symbol, candle.interval, [...updatedCandles]);
+        // 3. Schedule debounced metrics and rankings recomputation
+        this.scheduleMetricsUpdate();
 
-        // If candle is finalized, recompute metrics
-        if (candle.isFinal) {
-            // Recompute metrics for this symbol
-            this.computeMetricsForSymbol(candle.symbol);
-
-            // Recompute rankings (could be optimized to only update if needed)
-            const state = useZeroLagStore.getState();
-            const metricsBySymbol = state.metricsBySymbol;
-            const rankings = computeRankings(metricsBySymbol, state.symbols);
-            this.store.setRankings(rankings);
-
-            // Log in development
-            if (import.meta.env.DEV) {
-                console.log(
-                    `[ClientEngine] Updated ${candle.symbol} - Price: ${candle.close.toFixed(2)}`
-                );
-            }
-        }
-        // For non-final candles, cache is updated but metrics not recomputed
-        // This prevents excessive recalculation on every tick
-    }
-
-    /**
-     * Switch to a new interval
-     * 
-     * Unsubscribes from old interval, clears cache, fetches new data,
-     * and resubscribes to new interval.
-     * 
-     * @param newInterval - New interval to switch to
-     */
-    public async switchInterval(newInterval: Interval, oldIntervalOverride?: Interval): Promise<void> {
-        console.log(`[ClientEngine] Switching interval to ${newInterval}...`);
-
-        const oldInterval = oldIntervalOverride || this.store.interval;
-
-        // Only skip if no override provided and intervals match (meaning store already has new interval and we don't know old one)
-        // If override provided, we trust the caller knows we need to switch
-        if (!oldIntervalOverride && oldInterval === newInterval) {
-            console.log('[ClientEngine] Already on this interval');
-            return;
-        }
-
-        try {
-            // Unsubscribe from all current streams using OLD interval
-            if (this.store.wsConnected) {
-                console.log(`[ClientEngine] Unsubscribing from old streams (${oldInterval})...`);
-                for (const symbol of this.activeSymbols) {
-                    try {
-                        this.provider.unsubscribeCandles(symbol, oldInterval);
-                    } catch {
-                        // Ignore unsubscribe errors
-                    }
-                }
-            }
-
-            // Update interval in store (idempotent if already updated)
-            this.store.setInterval(newInterval);
-
-            // Clear candle cache (old interval data is no longer relevant)
-            this.candleCache.clearAll();
-            console.log('[ClientEngine] Cleared candle cache');
-
-            // Resubscribe to WebSocket with new interval
-            if (this.store.wsConnected) {
-                console.log('[ClientEngine] Resubscribing with new interval...');
-                for (const symbol of this.activeSymbols) {
-                    try {
-                        await this.provider.subscribeCandles(
-                            symbol,
-                            newInterval,
-                            this.handleCandleUpdate.bind(this)
-                        );
-                    } catch (error) {
-                        console.error(`[ClientEngine] Failed to resubscribe ${symbol}:`, error);
-                    }
-                }
-            }
-
-            // Fetch historical klines for new interval
-            await this.fetchHistoricalKlines(this.activeSymbols, 'All');
-
-            // Recompute all metrics with new data
-            this.recomputeAllMetrics();
-
-            console.log(`[ClientEngine] Switched to ${newInterval} ✓`);
-        } catch (error) {
-            console.error('[ClientEngine] Failed to switch interval:', error);
-            // Revert to old interval on failure
-            this.store.setInterval(oldInterval);
-            throw error;
+        // Log in development (throttled)
+        if (import.meta.env.DEV && candle.isFinal) {
+            console.log(
+                `[ClientEngine] Finalized ${candle.symbol} ${candle.interval} - Price: ${candle.close.toFixed(2)}`
+            );
         }
     }
+
 
     /**
      * Setup store change listeners
      * 
-     * Subscribes to store changes to react to interval switches.
-     * Should be called once during engine initialization.
+     * Subscribes to store changes to react to interval, sort mode, and count switches.
      */
     private handleStoreChanges(): void {
         let previousInterval = this.store.interval;
+        let previousSortMode = this.store.sortMode;
+        let previousCount = this.store.count;
 
         // Subscribe to store changes
         useZeroLagStore.subscribe((state) => {
-            const currentInterval = state.interval;
+            if (!this.isRunning) return;
 
-            // Check if interval changed
-            if (currentInterval !== previousInterval && this.isRunning) {
-                console.log(`[ClientEngine] Interval changed: ${previousInterval} → ${currentInterval}`);
+            // 1. Handle Interval Change
+            if (state.interval !== previousInterval) {
+                const oldInterval = previousInterval;
+                previousInterval = state.interval;
+                this.onIntervalChange(state.interval, oldInterval).catch(console.error);
+            }
 
-                // Switch to new interval, passing previous one explicitly
-                this.switchInterval(currentInterval, previousInterval).catch((error) => {
-                    console.error('[ClientEngine] Auto-switch interval failed:', error);
-                });
+            // 2. Handle Sort Mode Change
+            if (state.sortMode !== previousSortMode) {
+                previousSortMode = state.sortMode;
+                this.onSortModeChange(state.sortMode);
+            }
 
-                previousInterval = currentInterval;
+            // 3. Handle Count Change
+            if (state.count !== previousCount) {
+                previousCount = state.count;
+                this.onCountChange(state.count);
             }
         });
 
         console.log('[ClientEngine] Store change listeners setup ✓');
+    }
+
+    /**
+     * Handle sort mode change
+     */
+    private onSortModeChange(newMode: SortMode): void {
+        console.log(`[ClientEngine] Sort mode changed to ${newMode}`);
+        this.syncSubscriptions();
+    }
+
+    /**
+     * Handle interval change
+     */
+    private async onIntervalChange(newInterval: Interval, oldInterval: Interval): Promise<void> {
+        console.log(`[ClientEngine] Interval changed: ${oldInterval} → ${newInterval}`);
+
+        // 1. Unsubscribe from all old interval streams
+        this.unsubscribeAll();
+
+        // 2. Clear buffers (optional, but keeps memory clean)
+        this.candleBuffers.clear();
+
+        // 3. Re-initialize with new interval
+        await this.fetchHistoricalKlines(this.activeSymbols, 'All');
+
+        // 4. Recompute all metrics and rankings
+        this.recomputeAllMetrics();
+
+        // 5. Sync subscriptions for new interval
+        this.syncSubscriptions();
+    }
+
+    /**
+     * Handle count change
+     */
+    private onCountChange(newCount: number): void {
+        console.log(`[ClientEngine] Count changed to ${newCount}`);
+        this.syncSubscriptions();
+    }
+
+    /**
+     * Synchronize WebSocket subscriptions based on current visible symbols
+     * 
+     * Implements subscription diffing to only subscribe/unsubscribe changed symbols.
+     */
+    private syncSubscriptions(): void {
+        if (!this.store.wsConnected) return;
+
+        const interval = this.store.interval;
+        const rankings = this.store.rankings[this.store.sortMode] || [];
+        const visibleSymbols = rankings.slice(0, this.store.count).map(r => r.info.symbol);
+
+        const targetSubscriptions = new Set(visibleSymbols.map(s => `${s}:${interval}`));
+
+        // 1. Unsubscribe from symbols no longer visible
+        const toUnsubscribe = [...this.subscriptions].filter(sub => !targetSubscriptions.has(sub));
+        for (const sub of toUnsubscribe) {
+            const [symbol, inv] = sub.split(':');
+            this.provider.unsubscribeCandles(symbol, inv as Interval);
+            this.subscriptions.delete(sub);
+        }
+
+        // 2. Subscribe to new visible symbols
+        for (const sub of targetSubscriptions) {
+            if (!this.subscriptions.has(sub)) {
+                const [symbol, inv] = sub.split(':');
+                this.provider.subscribeCandles(symbol, inv as Interval, () => {
+                    // Global onKline handler takes care of the logic
+                });
+                this.subscriptions.add(sub);
+            }
+        }
+
+        console.log(`[ClientEngine] Subscriptions synced: ${this.subscriptions.size} active`);
+    }
+
+    /**
+     * Unsubscribe from all active streams
+     */
+    private unsubscribeAll(): void {
+        for (const sub of this.subscriptions) {
+            const [symbol, inv] = sub.split(':');
+            this.provider.unsubscribeCandles(symbol, inv as Interval);
+        }
+        this.subscriptions.clear();
     }
 
     /**
@@ -632,8 +741,8 @@ export class ClientEngine {
                 throw lastError || new Error(`Failed to fetch klines for ${symbol}`);
             }
 
-            // Parse klines to Candle objects
-            const candles = this.provider.parseKlinesToCandles(symbol, interval, klinesData);
+            // klinesData is already Candle[] from getKlines
+            const candles = klinesData;
 
             // Store in cache
             this.candleCache.setCandlesForSymbol(symbol, interval, candles);
@@ -684,82 +793,26 @@ export class ClientEngine {
     /**
      * Compute metrics for a single symbol
      * 
-     * Calculates all metrics (range, volume, extremum, growth) and updates store.
+     * Calculates all metrics (range, volume, extremum, growth).
      * 
      * @param symbol - Trading symbol to compute metrics for
+     * @returns Computed metrics or null if data is missing
      */
-    private computeMetricsForSymbol(symbol: string): void {
-        const interval = this.store.interval;
-        const now = Date.now();
-
-        // Get candles from cache
-        const candles = this.candleCache.getCandlesForSymbol(symbol, interval);
-
-        if (candles.length === 0) {
-            console.warn(`[ClientEngine] No candles for ${symbol}, skipping metrics`);
-            return;
+    private computeMetricsForSymbol(symbol: string): SymbolMetrics | null {
+        // Get candle buffers for this symbol
+        const symbolBuffers = this.candleBuffers.get(symbol);
+        if (!symbolBuffers) {
+            return null;
         }
-
-        // Get latest candle for last price
-        const latestCandle = candles[candles.length - 1];
-        const lastPrice = latestCandle.close;
-
-        // Compute range metrics for all windows
-        const ranges = {
-            '5m': computeRangeMetric(candles, '5m', now),
-            '15m': computeRangeMetric(candles, '15m', now),
-            '1h': computeRangeMetric(candles, '1h', now),
-            '4h': computeRangeMetric(candles, '4h', now),
-        } as const;
 
         // Get 24h ticker data
         const ticker = this.tickerMap.get(symbol);
-        const volume24h = ticker && ticker.quoteVolume ? parseFloat(ticker.quoteVolume) : 0;
-
-        // Compute volume metrics for all windows
-        const volume = {
-            '15m': computeVolumeMetric(candles, '15m', now),
-            '4h': computeVolumeMetric(candles, '4h', now),
-            '24h': { window: '24h', base: 0, quote: volume24h }, // Use ticker data for 24h
-        } as const;
-
-        // Compute daily extremum metric
-        // Use 24h ticker data if available (Spec 5.4.3), otherwise fallback to 4h range approximation
-        let high24h = ranges['4h'].high;
-        let low24h = ranges['4h'].low;
-
-        if (ticker) {
-            if (ticker.highPrice) high24h = parseFloat(ticker.highPrice);
-            if (ticker.lowPrice) low24h = parseFloat(ticker.lowPrice);
+        if (!ticker) {
+            return null;
         }
 
-        const dailyExtremum = computeDailyExtremumMetric(high24h, low24h, lastPrice);
-
-        // Compute growth metric (15m vs 4h)
-        const gVolume = computeGrowthMetric(
-            volume['15m'].quote,
-            volume['4h'].quote
-        );
-
-        // Get 24h change from ticker map (already retrieved above)
-        const change24h = ticker ? parseFloat(ticker.priceChangePercent || '0') : 0;
-
-        // Build SymbolMetrics object
-        const metrics: SymbolMetrics = {
-            symbol,
-            marketType: 'futures',
-            lastPrice,
-            lastUpdateTs: now,
-            change24h,
-            ranges,
-            volume,
-            growth: { gVolume },
-            dailyExtremum,
-            currentSortScore: 0, // Will be set by ranking computation
-        };
-
-        // Update store
-        this.store.upsertMetrics(symbol, metrics);
+        // Use the centralized computeSymbolMetrics function
+        return computeSymbolMetrics(symbol, symbolBuffers, ticker);
     }
 
     /**
@@ -770,10 +823,18 @@ export class ClientEngine {
     private recomputeAllMetrics(): void {
         console.log('[ClientEngine] Recomputing all metrics...');
 
+        const allMetrics: Record<string, SymbolMetrics> = {};
+
         // Recompute metrics for each symbol
         for (const symbol of this.activeSymbols) {
-            this.computeMetricsForSymbol(symbol);
+            const metrics = this.computeMetricsForSymbol(symbol);
+            if (metrics) {
+                allMetrics[symbol] = metrics;
+            }
         }
+
+        // Update store with all metrics at once (batch update)
+        this.store.setAllMetrics(allMetrics);
 
         // Get all metrics from store
         const state = useZeroLagStore.getState();
@@ -791,6 +852,167 @@ export class ClientEngine {
     /* =============================================
        UTILITY METHODS
        ============================================= */
+
+    /* =============================================
+       CANDLE BUFFER HELPERS
+       ============================================= */
+
+    /**
+     * Get candle buffer for a symbol and interval
+     * 
+     * @param symbol - Trading symbol
+     * @param interval - Candlestick interval
+     * @returns Array of candles, or empty array if not found
+     */
+    private getBuffer(symbol: string, interval: Interval): Candle[] {
+        const symbolMap = this.candleBuffers.get(symbol);
+        if (!symbolMap) {
+            return [];
+        }
+        return symbolMap.get(interval) || [];
+    }
+
+    /**
+     * Set candle buffer for a symbol and interval
+     * 
+     * Automatically trims to MAX_CANDLES_PER_BUFFER limit.
+     * 
+     * @param symbol - Trading symbol
+     * @param interval - Candlestick interval
+     * @param candles - Array of candles to store
+     */
+    private setBuffer(symbol: string, interval: Interval, candles: Candle[]): void {
+        this.ensureBuffer(symbol, interval);
+
+        const max = this.MAX_CANDLES_PER_BUFFER[interval];
+        const trimmed = candles.length > max
+            ? candles.slice(candles.length - max)
+            : candles;
+
+        this.candleBuffers.get(symbol)!.set(interval, trimmed);
+    }
+
+    /**
+     * Ensure buffer exists for a symbol and interval
+     * 
+     * Creates the nested Map structure if it doesn't exist.
+     * 
+     * @param symbol - Trading symbol
+     * @param interval - Candlestick interval
+     */
+    private ensureBuffer(symbol: string, interval: Interval): void {
+        if (!this.candleBuffers.has(symbol)) {
+            this.candleBuffers.set(symbol, new Map());
+        }
+
+        const symbolMap = this.candleBuffers.get(symbol)!;
+        if (!symbolMap.has(interval)) {
+            symbolMap.set(interval, []);
+        }
+    }
+
+    /**
+     * Update candle buffer with a new candle
+     * 
+     * Handles three cases:
+     * 1. New candle (openTime > last) - appends and enforces max size
+     * 2. Update existing (openTime === last) - replaces last candle
+     * 3. Old data (openTime < last) - ignores
+     * 
+     * @param symbol - Trading symbol
+     * @param interval - Candlestick interval
+     * @param newCandle - New or updated candle to add
+     */
+    private updateCandleBuffer(symbol: string, interval: Interval, newCandle: Candle): void {
+        // Ensure buffer exists
+        this.ensureBuffer(symbol, interval);
+
+        const buffer = this.getBuffer(symbol, interval);
+        const lastCandle = buffer[buffer.length - 1];
+
+        if (!lastCandle || newCandle.openTime > lastCandle.openTime) {
+            // New candle - append
+            buffer.push(newCandle);
+
+            // Enforce max size
+            const maxSize = this.MAX_CANDLES_PER_BUFFER[interval];
+            if (buffer.length > maxSize) {
+                buffer.shift();  // Remove oldest
+            }
+
+            // Update the buffer reference (in case we're working with a copy)
+            this.candleBuffers.get(symbol)!.set(interval, buffer);
+        } else if (newCandle.openTime === lastCandle.openTime) {
+            // Update existing candle - replace
+            // This handles live updates where isFinal may change from false to true
+            buffer[buffer.length - 1] = newCandle;
+
+            // Update the buffer reference
+            this.candleBuffers.get(symbol)!.set(interval, buffer);
+        }
+        // Else: ignore if openTime is older than last candle (out-of-order data)
+    }
+
+    /**
+     * Ensure required intervals are loaded for a symbol and sort mode
+     * 
+     * Lazy loads interval data only when needed for a specific sort mode.
+     * Checks which intervals are required and fetches any missing data.
+     * 
+     * @param symbol - Trading symbol
+     * @param sortMode - Sort mode that determines required intervals
+     */
+    private async ensureRequiredIntervals(symbol: string, sortMode: SortMode): Promise<void> {
+        const requiredIntervals = REQUIRED_INTERVALS[sortMode];
+
+        // If no intervals required (ticker-only mode), return early
+        if (requiredIntervals.length === 0) {
+            return;
+        }
+
+        // Check which intervals are missing
+        const missingIntervals: Interval[] = [];
+
+        for (const interval of requiredIntervals) {
+            const buffer = this.getBuffer(symbol, interval);
+
+            // Consider buffer missing if empty or has very few candles
+            if (buffer.length < 10) {
+                missingIntervals.push(interval);
+            }
+        }
+
+        // If all required intervals are loaded, return
+        if (missingIntervals.length === 0) {
+            return;
+        }
+
+        // Lazy load missing intervals
+        console.log(`[ClientEngine] Lazy loading ${missingIntervals.length} intervals for ${symbol} (${sortMode})`);
+
+        for (const interval of missingIntervals) {
+            try {
+                const limit = KLINE_FETCH_LIMITS[interval];
+                const candles = await this.provider.getHistoricalCandles(symbol, interval, limit);
+
+                if (candles.length > 0) {
+                    // Store in buffer
+                    this.setBuffer(symbol, interval, candles);
+
+                    // Also update candleCache for compatibility
+                    this.candleCache.setCandlesForSymbol(symbol, interval, candles);
+
+                    // Update store for UI
+                    this.store.setCandlesForSymbol(symbol, interval, candles);
+
+                    console.log(`[ClientEngine] Loaded ${candles.length} candles for ${symbol} ${interval}`);
+                }
+            } catch (error) {
+                console.error(`[ClientEngine] Failed to load ${interval} for ${symbol}:`, error);
+                // Continue with other intervals
+            }
+        }
+    }
 
 
     /**
