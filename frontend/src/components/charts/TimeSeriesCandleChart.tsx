@@ -430,20 +430,14 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         };
     }, []);
 
-    if (safeCandles.length < 5) {
-        return (
-            <div className="w-full h-full flex items-center justify-center bg-black/5">
-                <div className="flex flex-col items-center gap-3 animate-pulse">
-                    <div className="w-12 h-1 bg-emerald-500/20 rounded-full overflow-hidden">
-                        <div className="w-full h-full bg-emerald-500 animate-[loading_1.5s_infinite]" />
-                    </div>
-                    <span className="text-[10px] text-emerald-500/50 uppercase tracking-[0.2em] font-medium">
-                        Syncing Engine...
-                    </span>
-                </div>
+    return (
+        <div ref={chartRef} className="w-full h-full relative overflow-hidden">
+            {/* Symbol Watermark */}
+            <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden">
+                <span className="text-[120px] font-bold text-white/[0.04] uppercase tracking-tighter">
+                    {symbol.replace('USDT', '')}
+                </span>
             </div>
-        );
-    }
-
-    return <div ref={chartRef} className="w-full h-full" />;
+        </div>
+    );
 };

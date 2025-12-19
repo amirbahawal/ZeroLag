@@ -165,15 +165,13 @@ export class ClientEngine {
         console.log('[ClientEngine] Initializing bootstrap pipeline...');
 
         try {
-            // 1. Update store: set loading state
+            // 1. Render shell immediately (already handled by React, but we set status)
             this.store.setApiStatus('loading');
             this.store.setBootstrapProgress(0, 'Starting bootstrap...');
 
-            // 2. Fetch 24h tickers → determine active symbols → update store
+            // 2. Fetch 24h tickers → determine active symbols (Top 100) → update store
             this.store.setBootstrapProgress(5, 'Fetching 24h tickers...');
             const tickers = await this.provider.get24hTickers();
-
-            // Map tickers and determine active symbols (USDT pairs with volume)
             this.activeSymbols = determineActiveSymbols(tickers);
 
             for (const ticker of tickers) {
@@ -185,7 +183,7 @@ export class ClientEngine {
             this.store.setActiveSymbols(this.activeSymbols);
             console.log(`[ClientEngine] Identified ${this.activeSymbols.length} active symbols`);
 
-            // 3. Fetch exchange info → build symbol map → update store
+            // 3. Fetch exchange info → build symbol map
             this.store.setBootstrapProgress(15, 'Fetching exchange info...');
             const exchangeInfo = await this.provider.getExchangeInfo();
             const futuresSymbols = this.provider.filterFuturesUSDTSymbols(exchangeInfo.symbols);
@@ -204,42 +202,35 @@ export class ClientEngine {
             });
             this.store.setSymbols(symbolRecord);
 
-            // Initialize rankings with placeholder metrics so UI can render skeletons
+            // Initialize rankings with placeholder metrics so real symbol labels appear
             this.initializePlaceholderMetrics(symbolRecord);
 
-            // 4. Phase 1: Critical - Load ONLY chart interval for visible symbols
+            // 4. Seed candles for visible symbols (Critical for initial charts)
             this.store.setBootstrapProgress(30, 'Loading charts for visible symbols...');
             const visibleCount = this.store.count;
             const visibleSymbols = this.activeSymbols.slice(0, visibleCount);
             const backgroundSymbols = this.activeSymbols.slice(visibleCount);
 
-            // Use optimized loadRequiredIntervals for Phase 1
+            // Fetch 500 bars for visible symbols (chart interval)
             await this.loadRequiredIntervals(visibleSymbols, this.store.interval, 30, 60, false);
 
-            // 5. Connect WebSocket
+            // 5. Open WebSocket connection & Subscribe
             this.store.setBootstrapProgress(60, 'Connecting to WebSocket...');
+
+            // Register global kline listener
+            this.provider.onKline(this.handleCandleUpdate.bind(this));
+
             await this.provider.connectWebSocket();
             this.store.setWsConnected(true);
 
-            // 6. Register global kline listener BEFORE subscribing
-            this.provider.onKline(this.handleCandleUpdate.bind(this));
+            // syncSubscriptions will handle subscribing to all 100 active symbols
+            await this.syncSubscriptions();
 
-            // 7. Subscribe to visible symbols
-            console.log(`[ClientEngine] Subscribing to ${visibleSymbols.length} visible symbols...`);
-            for (const symbol of visibleSymbols) {
-                await this.provider.subscribeCandles(
-                    symbol,
-                    this.store.interval,
-                    () => { } // Global onKline listener handles the data
-                );
-                this.subscriptions.add(`${symbol}:${this.store.interval}`);
-            }
-
-            // 8. Phase 2: Background enrichment (non-blocking)
+            // 6. Background enrichment (non-blocking)
             this.store.setBootstrapProgress(70, 'Enriching background data...');
             this.startBackgroundEnrichment(visibleSymbols, backgroundSymbols, this.store.interval);
 
-            // 9. Start periodic updates
+            // 7. Start periodic updates
             this.startPeriodicUpdates();
             this.handleStoreChanges();
 
@@ -663,7 +654,7 @@ export class ClientEngine {
         console.log(`[ClientEngine] Interval changed: ${oldInterval} → ${newInterval}`);
 
         // 1. Unsubscribe from all old interval streams
-        this.unsubscribeAll();
+        await this.unsubscribeAll();
 
         // 2. DON'T clear buffers - we need metric intervals (5m, 15m, 4h)
         const metricIntervals: Interval[] = ['5m', '15m', '4h'];
@@ -710,8 +701,6 @@ export class ClientEngine {
      * Implements surgical updates and batched subscriptions to reduce churn.
      */
     private async syncSubscriptions(forceUnsubscribe: boolean = false): Promise<void> {
-        if (!this.store.wsConnected) return;
-
         const interval = this.store.interval;
 
         // Target ALL active symbols for the current interval to keep rankings fresh
@@ -751,12 +740,17 @@ export class ClientEngine {
         }
     }
 
-    private unsubscribeAll(): void {
-        for (const sub of this.subscriptions) {
+    private async unsubscribeAll(): Promise<void> {
+        if (this.subscriptions.size === 0) return;
+
+        const streams = Array.from(this.subscriptions).map(sub => {
             const [symbol, inv] = sub.split(':');
-            this.provider.unsubscribeCandles(symbol, inv as Interval);
-        }
+            return this.provider.buildStreamName(symbol, inv as Interval);
+        });
+
+        await this.provider.unsubscribe(streams);
         this.subscriptions.clear();
+        console.log(`[ClientEngine] Unsubscribed from all ${streams.length} streams`);
     }
 
     /**
