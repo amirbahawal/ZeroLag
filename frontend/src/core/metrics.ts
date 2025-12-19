@@ -120,7 +120,8 @@ export function computeRangeMetric(
             high: 0,
             low: 0,
             abs: 0,
-            pct: 0
+            pct: 0,
+            inactive: true
         };
     }
 
@@ -140,7 +141,8 @@ export function computeRangeMetric(
             high: high === -Infinity ? 0 : high,
             low: low === Infinity ? 0 : low,
             abs: 0,
-            pct: 0
+            pct: 0,
+            inactive: true
         };
     }
 
@@ -153,7 +155,8 @@ export function computeRangeMetric(
         high,
         low,
         abs,
-        pct
+        pct,
+        inactive: false
     };
 }
 
@@ -221,7 +224,7 @@ export function computeVolumeMetric(
     for (const c of relevantCandles) {
         base += c.volumeBase || 0;
         // Spec 5.4.2: quote = candle.volumeQuote ?? candle.close * candle.volumeBase
-        const quoteVal = c.volumeQuote || ((c.close || 0) * (c.volumeBase || 0));
+        const quoteVal = c.volumeQuote ?? ((c.close || 0) * (c.volumeBase || 0));
         quote += quoteVal;
     }
 
@@ -388,12 +391,12 @@ export function computeGrowthMetric(
             baselinePer15m: 0,
             current: current15mQuote,
             ratio: 0,
-            delta: current15mQuote
+            delta: 0
         };
     }
 
     const ratio = current15mQuote / baselinePer15m;
-    const delta = current15mQuote - baselinePer15m;
+    const delta = ratio - 1;
 
     return {
         currentWindow: '15m',
@@ -430,7 +433,7 @@ export function computeGrowthMetric(
  * @returns Complete SymbolMetrics object
  */
 export function computeSymbolMetrics(
-    symbol: string,
+    info: SymbolInfo,
     candleBuffers: Map<Interval, Candle[]>,
     ticker24h: Ticker24h
 ): SymbolMetrics {
@@ -471,8 +474,7 @@ export function computeSymbolMetrics(
     const dailyExtremum = computeDailyExtremumMetric(high24h, low24h, lastPrice);
 
     return {
-        symbol,
-        marketType: 'futures',
+        info,
         lastPrice,
         lastUpdateTs: now,
         ranges,

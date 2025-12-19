@@ -165,6 +165,7 @@ export interface RangeMetric {
     low: number;
     abs: number;
     pct: number;
+    inactive: boolean;
 }
 
 /**
@@ -255,8 +256,7 @@ export interface GrowthMetric {
  * This is the primary data structure stored in the Zustand state.
  */
 export interface SymbolMetrics {
-    symbol: string;
-    marketType: MarketType;
+    info: SymbolInfo;
     lastPrice: number;
     lastUpdateTs: number;
 
@@ -281,7 +281,6 @@ export interface SymbolMetrics {
 
     currentSortScore?: number;
 }
-
 /**
  * Ranked symbol entry for display in the grid.
  * 

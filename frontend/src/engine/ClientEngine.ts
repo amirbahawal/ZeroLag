@@ -95,7 +95,7 @@ export class ClientEngine {
     private metricsUpdateTimer: ReturnType<typeof setTimeout> | null = null;
 
     /** Metrics update debounce interval (milliseconds) */
-    private readonly METRICS_UPDATE_INTERVAL = 500; // 500ms
+    private readonly METRICS_UPDATE_INTERVAL = 2000; // 2 seconds
 
     /* =============================================
        CONSTRUCTOR
@@ -297,17 +297,23 @@ export class ClientEngine {
             const ticker = this.tickerMap.get(symbol);
             const volume24h = ticker && ticker.quoteVolume ? parseFloat(ticker.quoteVolume) : 0;
             const lastPrice = ticker && ticker.lastPrice ? parseFloat(ticker.lastPrice) : 0;
+            const info = symbolRecord[symbol] || {
+                symbol,
+                baseAsset: symbol.replace('USDT', ''),
+                quoteAsset: 'USDT',
+                marketType: 'futures' as const,
+                status: 'TRADING'
+            };
 
             initialMetrics[symbol] = {
-                symbol,
-                marketType: 'futures',
+                info,
                 lastPrice,
                 lastUpdateTs: now,
                 ranges: {
-                    '5m': { window: '5m', high: 0, low: 0, abs: 0, pct: 0 },
-                    '15m': { window: '15m', high: 0, low: 0, abs: 0, pct: 0 },
-                    '1h': { window: '1h', high: 0, low: 0, abs: 0, pct: 0 },
-                    '4h': { window: '4h', high: 0, low: 0, abs: 0, pct: 0 },
+                    '5m': { window: '5m', high: 0, low: 0, abs: 0, pct: 0, inactive: true },
+                    '15m': { window: '15m', high: 0, low: 0, abs: 0, pct: 0, inactive: true },
+                    '1h': { window: '1h', high: 0, low: 0, abs: 0, pct: 0, inactive: true },
+                    '4h': { window: '4h', high: 0, low: 0, abs: 0, pct: 0, inactive: true },
                 },
                 volume: {
                     '15m': { window: '15m', base: 0, quote: 0 },
@@ -331,7 +337,7 @@ export class ClientEngine {
                     distToHighPct: 0,
                     distToLowPct: 0,
                     nearestSide: 'none',
-                    score: 0
+                    score: Number.POSITIVE_INFINITY
                 },
                 currentSortScore: 0
             };
@@ -342,7 +348,7 @@ export class ClientEngine {
             this.store.upsertMetrics(symbol, metrics);
         }
 
-        const rankings = computeRankings(initialMetrics, symbolRecord);
+        const rankings = computeRankings(initialMetrics);
         this.store.setRankings(rankings);
     }
 
@@ -679,7 +685,7 @@ export class ClientEngine {
 
         this.stateSyncManager.queueMetricsUpdate(metrics);
 
-        const rankings = computeRankings(metrics, this.store.symbols);
+        const rankings = computeRankings(metrics);
         this.stateSyncManager.queueRankingsUpdate(rankings);
     }
 
@@ -687,13 +693,21 @@ export class ClientEngine {
         const ticker = this.tickerMap.get(symbol);
         if (!ticker) return null;
 
+        const info = this.store.symbols[symbol] || {
+            symbol,
+            baseAsset: symbol.replace('USDT', ''),
+            quoteAsset: 'USDT',
+            marketType: 'futures' as const,
+            status: 'TRADING'
+        };
+
         const candleMap = new Map<Interval, Candle[]>();
         const intervals: Interval[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
         for (const interval of intervals) {
             candleMap.set(interval, this.bufferManager.getBuffer(symbol, interval));
         }
 
-        return computeSymbolMetrics(symbol, candleMap, ticker as any);
+        return computeSymbolMetrics(info, candleMap, ticker as any);
     }
 
     private startPeriodicUpdates(): void {

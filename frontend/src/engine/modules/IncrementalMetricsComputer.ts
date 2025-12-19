@@ -35,16 +35,18 @@ export class IncrementalMetricsComputer {
      */
     computeIncremental(
         candleBuffers: Map<string, Map<Interval, Candle[]>>,
-        tickerMap: Map<string, Ticker24h>
+        tickerMap: Map<string, Ticker24h>,
+        symbolInfoMap: Record<string, any>
     ): Record<string, SymbolMetrics> {
         const updates: Record<string, SymbolMetrics> = {};
 
         for (const symbol of this.dirtySymbols) {
             const buffers = candleBuffers.get(symbol);
             const ticker = tickerMap.get(symbol);
+            const info = symbolInfoMap[symbol];
 
-            if (buffers && ticker) {
-                const metrics = computeSymbolMetrics(symbol, buffers, ticker);
+            if (buffers && ticker && info) {
+                const metrics = computeSymbolMetrics(info, buffers, ticker);
                 this.metricCache.set(symbol, metrics);
                 updates[symbol] = metrics;
             }
@@ -63,16 +65,18 @@ export class IncrementalMetricsComputer {
     computeAll(
         symbols: string[],
         candleBuffers: Map<string, Map<Interval, Candle[]>>,
-        tickerMap: Map<string, Ticker24h>
+        tickerMap: Map<string, Ticker24h>,
+        symbolInfoMap: Record<string, any>
     ): Record<string, SymbolMetrics> {
         const allMetrics: Record<string, SymbolMetrics> = {};
 
         for (const symbol of symbols) {
             const buffers = candleBuffers.get(symbol);
             const ticker = tickerMap.get(symbol);
+            const info = symbolInfoMap[symbol];
 
-            if (buffers && ticker) {
-                const metrics = computeSymbolMetrics(symbol, buffers, ticker);
+            if (buffers && ticker && info) {
+                const metrics = computeSymbolMetrics(info, buffers, ticker);
                 this.metricCache.set(symbol, metrics);
                 allMetrics[symbol] = metrics;
             }

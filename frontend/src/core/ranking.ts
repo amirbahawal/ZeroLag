@@ -146,16 +146,13 @@ function buildEntry(
  * - Result: Top 100 symbols for each mode
  * 
  * @param metricsBySymbol - Map of symbol to metrics
- * @param symbolInfo - Map of symbol to info (optional, defaults to store symbols)
  * @returns Map of sort mode to ranked symbol entries
  * 
- * @pure If symbolInfo is provided, this function is pure.
+ * @pure This function is pure and has no side effects.
  */
 export function computeRankings(
-    metricsBySymbol: Record<string, SymbolMetrics>,
-    symbolInfo?: Record<string, SymbolInfo>
+    metricsBySymbol: Record<string, SymbolMetrics>
 ): Record<SortMode, SymbolTopEntry[]> {
-    const infoMap = symbolInfo || useZeroLagStore.getState().symbols;
     const symbols = Object.keys(metricsBySymbol);
 
     // Initialize rankings object
@@ -165,20 +162,37 @@ export function computeRankings(
     for (const mode of SORT_MODES) {
         // Build entries for all symbols
         const entries = symbols
-            .map(symbol => buildEntry(symbol, metricsBySymbol[symbol], infoMap, mode))
+            .map(symbol => {
+                const metrics = metricsBySymbol[symbol];
+                const sortScore = extractSortScore(metrics, mode);
+                return {
+                    info: metrics.info,
+                    metrics,
+                    sortMode: mode,
+                    sortScore
+                };
+            })
             .filter(entry => {
-                // Filter out entries with invalid scores (NaN, Infinity)
+                // Filter out NaN scores, but allow Infinity (important for dext sorting to bottom)
                 const score = entry.sortScore;
-                return isFinite(score) && !isNaN(score);
+                return !isNaN(score);
             });
 
         // Sort based on mode
         if (mode === 'dext') {
             // Ascending: lower score = closer to extremum = better
-            entries.sort((a, b) => a.sortScore - b.sortScore);
+            // Infinity will naturally sort to the end
+            entries.sort((a, b) => {
+                if (a.sortScore === b.sortScore) return 0;
+                return a.sortScore > b.sortScore ? 1 : -1;
+            });
         } else {
             // Descending: higher value = better
-            entries.sort((a, b) => b.sortScore - a.sortScore);
+            // 0 will naturally sort to the end
+            entries.sort((a, b) => {
+                if (a.sortScore === b.sortScore) return 0;
+                return a.sortScore < b.sortScore ? 1 : -1;
+            });
         }
 
         // Return top 100 (or all if fewer)
@@ -212,10 +226,10 @@ export async function refreshRankings(): Promise<void> {
     lastRankingUpdate = now;
 
     // Get current state
-    const { metricsBySymbol, symbols, setRankings } = useZeroLagStore.getState();
+    const { metricsBySymbol, setRankings } = useZeroLagStore.getState();
 
     // Compute new rankings
-    const rankings = computeRankings(metricsBySymbol, symbols);
+    const rankings = computeRankings(metricsBySymbol);
 
     // Update store
     setRankings(rankings);
