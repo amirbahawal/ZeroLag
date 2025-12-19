@@ -65,13 +65,9 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         return () => observer.disconnect();
     }, []);
 
-    if (safeCandles.length === 0) {
-        return <div className="w-full h-full flex items-center justify-center text-gray-600 text-xs">No data</div>;
-    }
-
     // Chart Initialization
     useEffect(() => {
-        if (!chartRef.current || dimensions.width === 0 || dimensions.height === 0) return;
+        if (!chartRef.current || dimensions.width === 0 || dimensions.height === 0 || safeCandles.length < 5) return;
 
         // RESPONSIVE STYLING BASED ON GRID SIZE
         // As grid size increases, we show fewer candles to keep them thick and visible
@@ -433,6 +429,21 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
             }
         };
     }, []);
+
+    if (safeCandles.length < 5) {
+        return (
+            <div className="w-full h-full flex items-center justify-center bg-black/5">
+                <div className="flex flex-col items-center gap-3 animate-pulse">
+                    <div className="w-12 h-1 bg-emerald-500/20 rounded-full overflow-hidden">
+                        <div className="w-full h-full bg-emerald-500 animate-[loading_1.5s_infinite]" />
+                    </div>
+                    <span className="text-[10px] text-emerald-500/50 uppercase tracking-[0.2em] font-medium">
+                        Syncing Engine...
+                    </span>
+                </div>
+            </div>
+        );
+    }
 
     return <div ref={chartRef} className="w-full h-full" />;
 };

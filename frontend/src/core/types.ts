@@ -165,6 +165,7 @@ export interface RangeMetric {
     low: number;
     abs: number;
     pct: number;
+    inactive?: boolean;
 }
 
 /**

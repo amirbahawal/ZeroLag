@@ -7,7 +7,7 @@
 
 import React from 'react';
 import { TimeSeriesCandleChart } from '../charts/TimeSeriesCandleChart';
-import { ChartSkeleton } from './ChartSkeleton';
+import { ChartAreaSkeleton } from './ChartSkeleton';
 import type { SymbolTopEntry, SortMode, SymbolMetrics } from '../../core/types';
 import { useZeroLagStore } from '../../state/useZeroLagStore';
 
@@ -95,14 +95,14 @@ export const ChartCell: React.FC<ChartCellProps> = ({ entry }) => {
 
             {/* Chart Area */}
             <div className="flex-1 w-full min-h-0 relative z-10">
-                {candles.length > 0 ? (
+                {candles.length >= 5 ? (
                     <TimeSeriesCandleChart
                         symbol={symbol}
                         interval={interval}
                         candles={candles}
                     />
                 ) : (
-                    <ChartSkeleton />
+                    <ChartAreaSkeleton />
                 )}
             </div>
         </div>

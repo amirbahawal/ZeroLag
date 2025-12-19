@@ -120,7 +120,8 @@ export function computeRangeMetric(
             high: 0,
             low: 0,
             abs: 0,
-            pct: 0
+            pct: 0,
+            inactive: true
         };
     }
 
@@ -140,7 +141,8 @@ export function computeRangeMetric(
             high: high === -Infinity ? 0 : high,
             low: low === Infinity ? 0 : low,
             abs: 0,
-            pct: 0
+            pct: 0,
+            inactive: true
         };
     }
 
@@ -220,7 +222,9 @@ export function computeVolumeMetric(
 
     for (const c of relevantCandles) {
         base += c.volumeBase || 0;
-        quote += c.volumeQuote || 0;
+        // Spec 5.4.2: quote = candle.volumeQuote ?? candle.close * candle.volumeBase
+        const quoteVal = c.volumeQuote || ((c.close || 0) * (c.volumeBase || 0));
+        quote += quoteVal;
     }
 
     return {
@@ -288,7 +292,7 @@ export function computeDailyExtremumMetric(
     lastPrice: number
 ): DailyExtremumMetric {
     // Edge case: Invalid input data
-    if (high24h <= 0 || low24h <= 0 || lastPrice <= 0) {
+    if (high24h <= 0 || low24h <= 0 || lastPrice <= 0 || high24h < low24h) {
         return {
             high24h,
             low24h,
@@ -296,26 +300,26 @@ export function computeDailyExtremumMetric(
             distToHighPct: 0,
             distToLowPct: 0,
             nearestSide: 'none',
-            score: 0
-        };
-    }
-
-    // Additional validation: high should be >= low
-    if (high24h < low24h) {
-        return {
-            high24h,
-            low24h,
-            lastPrice,
-            distToHighPct: 0,
-            distToLowPct: 0,
-            nearestSide: 'none',
-            score: 0
+            score: Number.POSITIVE_INFINITY
         };
     }
 
     // Calculate distances as percentages
     const distToHighPct = (high24h - lastPrice) / high24h;
     const distToLowPct = (lastPrice - low24h) / low24h;
+
+    // Spec 5.4.3: If both distances are > 0
+    if (distToHighPct <= 0 || distToLowPct <= 0) {
+        return {
+            high24h,
+            low24h,
+            lastPrice,
+            distToHighPct,
+            distToLowPct,
+            nearestSide: 'none',
+            score: Number.POSITIVE_INFINITY
+        };
+    }
 
     // Determine nearest side and score
     let nearestSide: 'high' | 'low' | 'none';

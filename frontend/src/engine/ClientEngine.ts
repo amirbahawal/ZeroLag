@@ -16,7 +16,7 @@ import { KLINE_FETCH_LIMITS } from '../core/intervals';
 import {
     computeSymbolMetrics,
 } from '../core/metrics';
-import { computeRankings, refreshRankings } from '../core/ranking';
+import { computeRankings } from '../core/ranking';
 import { type Ticker24h, determineActiveSymbols } from '../data/binanceRest';
 import type { SortMode } from '../core/types';
 
@@ -174,7 +174,6 @@ export class ClientEngine {
             const tickers = await this.provider.get24hTickers();
 
             // Map tickers and determine active symbols (USDT pairs with volume)
-            // Use helper to ensure consistent top 100 logic
             this.activeSymbols = determineActiveSymbols(tickers);
 
             for (const ticker of tickers) {
@@ -208,19 +207,24 @@ export class ClientEngine {
             // Initialize rankings with placeholder metrics so UI can render skeletons
             this.initializePlaceholderMetrics(symbolRecord);
 
-            // 4. Seed candles for visible symbols → update store progressively
-            this.store.setBootstrapProgress(30, 'Loading candles for visible symbols...');
-            const visibleCount = this.store.count; // e.g., 16
+            // 4. Phase 1: Critical - Load ONLY chart interval for visible symbols
+            this.store.setBootstrapProgress(30, 'Loading charts for visible symbols...');
+            const visibleCount = this.store.count;
             const visibleSymbols = this.activeSymbols.slice(0, visibleCount);
             const backgroundSymbols = this.activeSymbols.slice(visibleCount);
 
-            await this.loadRequiredIntervals(visibleSymbols, this.store.interval, 30, 70);
+            // Use optimized loadRequiredIntervals for Phase 1
+            await this.loadRequiredIntervals(visibleSymbols, this.store.interval, 30, 60, false);
 
-            // 5. Connect WebSocket → subscribe to visible symbols → update store
-            this.store.setBootstrapProgress(70, 'Connecting to WebSocket...');
+            // 5. Connect WebSocket
+            this.store.setBootstrapProgress(60, 'Connecting to WebSocket...');
             await this.provider.connectWebSocket();
             this.store.setWsConnected(true);
 
+            // 6. Register global kline listener BEFORE subscribing
+            this.provider.onKline(this.handleCandleUpdate.bind(this));
+
+            // 7. Subscribe to visible symbols
             console.log(`[ClientEngine] Subscribing to ${visibleSymbols.length} visible symbols...`);
             for (const symbol of visibleSymbols) {
                 await this.provider.subscribeCandles(
@@ -231,32 +235,11 @@ export class ClientEngine {
                 this.subscriptions.add(`${symbol}:${this.store.interval}`);
             }
 
-            // 6. Background: seed remaining symbols and subscribe
-            this.store.setBootstrapProgress(85, 'Enriching background data...');
-            this.loadRequiredIntervals(backgroundSymbols, this.store.interval, 70, 90)
-                .then(async () => {
-                    console.log(`[ClientEngine] Subscribing to ${backgroundSymbols.length} background symbols...`);
-                    // Subscribe in small batches to avoid overwhelming WS
-                    for (let i = 0; i < backgroundSymbols.length; i += 10) {
-                        const batch = backgroundSymbols.slice(i, i + 10);
-                        await Promise.all(batch.map(symbol => {
-                            this.subscriptions.add(`${symbol}:${this.store.interval}`);
-                            return this.provider.subscribeCandles(
-                                symbol,
-                                this.store.interval,
-                                () => { } // Global onKline listener handles the data
-                            );
-                        }));
-                        await new Promise(r => setTimeout(r, 100));
-                    }
-                    this.store.setBootstrapProgress(100, 'Ready');
-                })
-                .catch(err => console.error('[ClientEngine] Background enrichment failed:', err));
+            // 8. Phase 2: Background enrichment (non-blocking)
+            this.store.setBootstrapProgress(70, 'Enriching background data...');
+            this.startBackgroundEnrichment(visibleSymbols, backgroundSymbols, this.store.interval);
 
-            // 7. Register global kline listener
-            this.provider.onKline(this.handleCandleUpdate.bind(this));
-
-            // 8. Start metrics update timer
+            // 9. Start periodic updates
             this.startPeriodicUpdates();
             this.handleStoreChanges();
 
@@ -407,17 +390,17 @@ export class ClientEngine {
         symbols: string[],
         interval: Interval,
         startProgress: number = 0,
-        endProgress: number = 100
+        endProgress: number = 100,
+        customBatchDelay?: number
     ): Promise<void> {
         if (symbols.length === 0) return;
 
-        // ✅ UPDATE: Show interval in progress message
         console.log(`[ClientEngine] Seeding ${interval} candles for ${symbols.length} symbols...`);
         this.store.setBootstrapProgress(startProgress, `Loading ${interval} candles...`);
 
         const limit = KLINE_FETCH_LIMITS[interval];
         const batchSize = 4; // Max concurrent requests
-        const batchDelay = 100; // 100ms between batches
+        const batchDelay = customBatchDelay ?? 100; // Use custom delay if provided
 
         let completed = 0;
         let failed = 0;
@@ -428,29 +411,40 @@ export class ClientEngine {
             const batchCandles: Record<string, Candle[]> = {};
             const batchMetrics: Record<string, SymbolMetrics> = {};
 
-            // Fetch batch concurrently
+            // Fetch batch concurrently with retry logic
             const promises = batch.map(async (symbol: string) => {
-                try {
-                    const candles = await this.provider.getHistoricalCandles(symbol, interval, limit);
+                let success = false;
 
-                    if (candles.length > 0) {
-                        // Single source of truth: BufferManager only
-                        this.bufferManager.setBuffer(symbol, interval, candles);
+                // Spec requirement: Simple retry (max 2 attempts) with 2s delay
+                for (let attempt = 1; attempt <= 2; attempt++) {
+                    try {
+                        const candles = await this.provider.getHistoricalCandles(symbol, interval, limit);
 
-                        // Get reference for store/metrics
-                        const buffer = this.bufferManager.getBuffer(symbol, interval);
-                        batchCandles[`${symbol}:${interval}`] = buffer;
+                        if (candles.length > 0) {
+                            this.bufferManager.setBuffer(symbol, interval, candles);
+                            const buffer = this.bufferManager.getBuffer(symbol, interval);
+                            batchCandles[`${symbol}:${interval}`] = buffer;
 
-                        // Compute initial metrics
-                        const metrics = this.computeMetricsForSymbol(symbol);
-                        if (metrics) {
-                            batchMetrics[symbol] = metrics;
+                            const metrics = this.computeMetricsForSymbol(symbol);
+                            if (metrics) {
+                                batchMetrics[symbol] = metrics;
+                            }
+
+                            completed++;
+                            success = true;
+                            break; // Success, exit retry loop
                         }
-
-                        completed++;
+                    } catch (error) {
+                        if (attempt === 1) {
+                            console.warn(`[ClientEngine] Retry 1/2 for ${symbol} ${interval} after error...`);
+                            await new Promise(r => setTimeout(r, 2000)); // 2s delay before retry
+                        } else {
+                            console.error(`[ClientEngine] Failed to seed candles for ${symbol} after 2 attempts:`, error);
+                        }
                     }
-                } catch (error) {
-                    console.error(`[ClientEngine] Failed to seed candles for ${symbol}:`, error);
+                }
+
+                if (!success) {
                     failed++;
                 }
             });
@@ -489,45 +483,91 @@ export class ClientEngine {
      * 3. Current chart interval for background symbols
      * 4. Metric intervals for background symbols
      */
+    /**
+     * Load required intervals for a set of symbols
+     * 
+     * Implements the two-phase loading strategy:
+     * Phase 1: Critical - Load chart interval for immediate display
+     * Phase 2: Background - Load remaining metric intervals with delays
+     */
     private async loadRequiredIntervals(
         symbols: string[],
         chartInterval: Interval,
         startProgress: number,
-        endProgress: number
+        endProgress: number,
+        isBackground: boolean = false,
+        customBatchDelay?: number
     ): Promise<void> {
-        console.log(`[ClientEngine] Loading all required intervals for ${symbols.length} symbols...`);
-
-        // Define metric intervals (needed for all sort modes)
-        const metricIntervals: Interval[] = ['5m', '15m', '4h'];
-
-        // Build interval priority list
-        const intervalPriority: Interval[] = [
-            chartInterval,  // 1. Chart interval first (for immediate rendering)
-            ...metricIntervals.filter(i => i !== chartInterval)  // 2. Other metric intervals
-        ];
-
-        const progressPerInterval = (endProgress - startProgress) / intervalPriority.length;
-        let currentProgress = startProgress;
-
-        // Load each interval sequentially (prevents rate limiting)
-        for (let i = 0; i < intervalPriority.length; i++) {
-            const interval = intervalPriority[i];
-            const intervalStart = currentProgress;
-            const intervalEnd = currentProgress + progressPerInterval;
-
-            console.log(`[ClientEngine] Loading ${interval} candles (${i + 1}/${intervalPriority.length})...`);
-
-            await this.seedCandleBuffers(symbols, interval, intervalStart, intervalEnd);
-
-            currentProgress = intervalEnd;
-
-            // Small delay between intervals to avoid rate limits
-            if (i < intervalPriority.length - 1) {
-                await new Promise(r => setTimeout(r, 200));
-            }
+        if (!isBackground) {
+            // Phase 1: Critical - Load ONLY chart interval
+            await this.seedCandleBuffers(symbols, chartInterval, startProgress, endProgress, customBatchDelay);
+            return;
         }
 
-        console.log('[ClientEngine] All required intervals loaded ✓');
+        // Phase 2: Background - Load remaining metric intervals
+        const metricIntervals: Interval[] = ['5m', '15m', '1h', '4h'];
+        const intervalsToLoad = metricIntervals.filter(i => i !== chartInterval);
+
+        if (intervalsToLoad.length === 0) return;
+
+        const batchDelay = customBatchDelay ?? 1000; // Background priority
+        const progressPerInterval = (endProgress - startProgress) / intervalsToLoad.length;
+
+        for (let i = 0; i < intervalsToLoad.length; i++) {
+            const interval = intervalsToLoad[i];
+            const start = startProgress + (i * progressPerInterval);
+            const end = startProgress + ((i + 1) * progressPerInterval);
+
+            await this.seedCandleBuffers(symbols, interval, start, end, batchDelay);
+
+            if (i < intervalsToLoad.length - 1) {
+                await new Promise(r => setTimeout(r, 1000)); // 1s cool-down between background intervals
+            }
+        }
+    }
+
+    /**
+     * Orchestrate background data enrichment
+     * 
+     * Fetches non-critical intervals and background symbols without blocking the UI.
+     */
+    private async startBackgroundEnrichment(
+        visibleSymbols: string[],
+        backgroundSymbols: string[],
+        chartInterval: Interval
+    ): Promise<void> {
+        try {
+            // 1. Load metric intervals for visible symbols (Background)
+            await this.loadRequiredIntervals(visibleSymbols, chartInterval, 70, 80, true);
+
+            // Cool-down between phases
+            await new Promise(r => setTimeout(r, 1000));
+
+            // 2. Load chart interval for background symbols (500ms delay to prevent rate limits)
+            await this.loadRequiredIntervals(backgroundSymbols, chartInterval, 80, 90, false, 500);
+
+            // Subscribe to background symbols for the current chart interval
+            console.log(`[ClientEngine] Subscribing to ${backgroundSymbols.length} background symbols...`);
+            for (let i = 0; i < backgroundSymbols.length; i += 10) {
+                const batch = backgroundSymbols.slice(i, i + 10);
+                await Promise.all(batch.map(symbol => {
+                    this.subscriptions.add(`${symbol}:${chartInterval}`);
+                    return this.provider.subscribeCandles(symbol, chartInterval, () => { });
+                }));
+                await new Promise(r => setTimeout(r, 200));
+            }
+
+            // Cool-down before final heavy lifting
+            await new Promise(r => setTimeout(r, 1000));
+
+            // 3. Load metric intervals for background symbols (Background, 500ms delay)
+            await this.loadRequiredIntervals(backgroundSymbols, chartInterval, 90, 98, true, 500);
+
+            this.store.setBootstrapProgress(100, 'Ready');
+            console.log('[ClientEngine] Background enrichment complete ✓');
+        } catch (error) {
+            console.error('[ClientEngine] Background enrichment failed:', error);
+        }
     }
 
 
@@ -604,8 +644,6 @@ export class ClientEngine {
         console.log(`[ClientEngine] Sort mode changed to ${newMode}`);
 
         // Ensure required intervals for visible symbols
-        // We get visible symbols from the *current* rankings (which might be based on old data, but it's a good start)
-        // Or better, use the active symbols list if rankings aren't ready for this mode
         const rankings = this.store.rankings[newMode] || [];
         const visibleSymbols = rankings.length > 0
             ? rankings.slice(0, this.store.count).map(r => r.info.symbol)
@@ -628,7 +666,6 @@ export class ClientEngine {
         this.unsubscribeAll();
 
         // 2. DON'T clear buffers - we need metric intervals (5m, 15m, 4h)
-        //    Only clear the OLD chart interval if not used for metrics
         const metricIntervals: Interval[] = ['5m', '15m', '4h'];
         if (!metricIntervals.includes(oldInterval)) {
             // Safe to clear old chart interval
@@ -724,8 +761,7 @@ export class ClientEngine {
      */
     private startPeriodicUpdates(): void {
         console.log(
-            `[ClientEngine] Starting periodic updates (every ${this.UPDATE_INTERVAL_MS / 1000
-            }s)...`
+            `[ClientEngine] Starting periodic updates (every ${this.UPDATE_INTERVAL_MS / 1000}s)...`
         );
 
         this.updateInterval = setInterval(() => {
@@ -754,8 +790,8 @@ export class ClientEngine {
         // Update 24h tickers to keep change24h fresh
         await this.updateTickers();
 
-        // Refresh rankings
-        await refreshRankings();
+        // Recompute all metrics and rankings
+        this.recomputeAllMetrics();
 
         // Log StateSyncManager stats
         const syncStats = this.stateSyncManager.getStats();
