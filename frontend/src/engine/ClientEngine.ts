@@ -564,6 +564,18 @@ export class ClientEngine {
     private onSortModeChange(newMode: SortMode): void {
         console.log(`[ClientEngine] Sort mode changed to ${newMode}`);
 
+        // Auto-switch interval to match the sort mode (Spec 5.4.1 & 5.4.2)
+        if (newMode.startsWith('range_')) {
+            const rangeInterval = newMode.replace('range_', '') as Interval;
+            if (this.store.interval !== rangeInterval) {
+                this.store.setInterval(rangeInterval);
+            }
+        } else if (newMode === 'volume_15m' || newMode === 'gvolume') {
+            if (this.store.interval !== '15m') {
+                this.store.setInterval('15m');
+            }
+        }
+
         // Ensure required intervals for visible symbols
         const rankings = this.store.rankings[newMode] || [];
         const visibleSymbols = rankings.length > 0
