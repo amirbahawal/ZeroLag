@@ -39,8 +39,7 @@ export const TopBar: React.FC = () => {
                     <div className="flex items-center gap-2">
                         <span className="text-[11px] font-medium text-[color:var(--text-muted)]">REST</span>
                         <div
-                            className={`w-2 h-2 rounded-full transition-colors duration-300 ${apiStatus === 'ok' ? 'bg-[color:var(--candle-up)] shadow-[0_0_8px_rgba(31,211,154,0.4)]' :
-                                    apiStatus === 'loading' ? 'bg-[color:var(--accent-amber)]' : 'bg-[color:var(--accent-red)]'
+                            className={`w-2 h-2 rounded-full transition-colors duration-300 ${apiStatus === 'ok' ? 'bg-[color:var(--candle-up)] shadow-[0_0_8px_rgba(31,211,154,0.4)]' : 'bg-[color:var(--accent-red)]'
                                 }`}
                         />
                     </div>

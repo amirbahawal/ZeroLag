@@ -434,7 +434,7 @@ export const TimeSeriesCandleChart: React.FC<TimeSeriesCandleChartProps> = ({ sy
         <div ref={chartRef} className="w-full h-full relative overflow-hidden">
             {/* Symbol Watermark */}
             <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none overflow-hidden">
-                <span className="text-[120px] font-bold text-white/[0.04] uppercase tracking-tighter">
+                <span className="text-[32px] font-bold text-white/[0.04] uppercase tracking-tighter">
                     {symbol.replace('USDT', '')}
                 </span>
             </div>

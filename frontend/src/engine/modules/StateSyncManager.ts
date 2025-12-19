@@ -12,10 +12,9 @@
  */
 
 import type { ZeroLagState } from '../../state/useZeroLagStore';
-import type { Interval, Candle, SymbolMetrics, SymbolTopEntry, SortMode } from '../../core/types';
+import type { SymbolMetrics, SymbolTopEntry, SortMode } from '../../core/types';
 
 interface PendingUpdates {
-    candles: Record<string, Candle[]>;
     metrics: Record<string, SymbolMetrics>;
     rankings: Record<SortMode, SymbolTopEntry[]> | null;
 }
@@ -27,13 +26,11 @@ export class StateSyncManager {
 
     // Separate queues for visible vs background symbols
     private visibleUpdates: PendingUpdates = {
-        candles: {},
         metrics: {},
         rankings: null
     };
 
     private backgroundUpdates: PendingUpdates = {
-        candles: {},
         metrics: {},
         rankings: null
     };
@@ -57,21 +54,6 @@ export class StateSyncManager {
         this.visibleSymbols = new Set(symbols);
     }
 
-    /**
-     * Queue a candle update
-     * Automatically routes to visible or background queue
-     */
-    queueCandleUpdate(symbol: string, interval: Interval, candles: Candle[]): void {
-        const key = `${symbol}:${interval}`;
-
-        if (this.visibleSymbols.has(symbol)) {
-            this.visibleUpdates.candles[key] = candles;
-            this.scheduleFlush('visible');
-        } else {
-            this.backgroundUpdates.candles[key] = candles;
-            this.scheduleFlush('background');
-        }
-    }
 
     /**
      * Queue metrics update
@@ -150,15 +132,9 @@ export class StateSyncManager {
     private flushVisible(): void {
         const updates = this.visibleUpdates;
 
-        // Batch candles
-        if (Object.keys(updates.candles).length > 0) {
-            this.store.setAllCandles(updates.candles);
-            updates.candles = {};
-        }
-
         // Batch metrics
         if (Object.keys(updates.metrics).length > 0) {
-            this.store.setAllMetrics(updates.metrics);
+            this.store.updateMetricsBatch(updates.metrics);
             updates.metrics = {};
         }
 
@@ -175,15 +151,9 @@ export class StateSyncManager {
     private flushBackground(): void {
         const updates = this.backgroundUpdates;
 
-        // Batch candles
-        if (Object.keys(updates.candles).length > 0) {
-            this.store.setAllCandles(updates.candles);
-            updates.candles = {};
-        }
-
         // Batch metrics
         if (Object.keys(updates.metrics).length > 0) {
-            this.store.setAllMetrics(updates.metrics);
+            this.store.updateMetricsBatch(updates.metrics);
             updates.metrics = {};
         }
     }
@@ -205,16 +175,12 @@ export class StateSyncManager {
      * Get statistics about pending updates
      */
     getStats(): {
-        visibleCandles: number;
         visibleMetrics: number;
-        backgroundCandles: number;
         backgroundMetrics: number;
         hasRankings: boolean;
     } {
         return {
-            visibleCandles: Object.keys(this.visibleUpdates.candles).length,
             visibleMetrics: Object.keys(this.visibleUpdates.metrics).length,
-            backgroundCandles: Object.keys(this.backgroundUpdates.candles).length,
             backgroundMetrics: Object.keys(this.backgroundUpdates.metrics).length,
             hasRankings: this.visibleUpdates.rankings !== null
         };

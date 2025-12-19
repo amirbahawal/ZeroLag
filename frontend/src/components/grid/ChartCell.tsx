@@ -10,12 +10,13 @@ import { TimeSeriesCandleChart } from '../charts/TimeSeriesCandleChart';
 import { ChartAreaSkeleton } from './ChartSkeleton';
 import type { SymbolTopEntry, SortMode, SymbolMetrics } from '../../core/types';
 import { useZeroLagStore } from '../../state/useZeroLagStore';
+import { defaultEngine } from '../../engine/ClientEngine';
+import { useMemo } from 'react';
 
 interface ChartCellProps {
     entry: SymbolTopEntry;
 }
 
-const EMPTY_ARRAY: any[] = [];
 
 export const ChartCell: React.FC<ChartCellProps> = ({ entry }) => {
     const { symbol, baseAsset } = entry.info;
@@ -26,8 +27,10 @@ export const ChartCell: React.FC<ChartCellProps> = ({ entry }) => {
     const interval = useZeroLagStore(state => state.interval);
     const gridCount = useZeroLagStore(state => state.count);
 
-    // Fetch candles from store
-    const candles = useZeroLagStore(state => state.candles[`${symbol}:${interval}`] || EMPTY_ARRAY);
+    // Fetch candles from engine (reactive via metrics trigger)
+    const candles = useMemo(() => {
+        return defaultEngine.bufferManager.getBuffer(symbol, interval);
+    }, [symbol, interval, metrics]);
 
     // Helper to format sort label
     const getSortLabel = (mode: SortMode, score: number, metrics: SymbolMetrics) => {
@@ -62,7 +65,7 @@ export const ChartCell: React.FC<ChartCellProps> = ({ entry }) => {
         <div
             className="w-full h-full flex flex-col relative overflow-hidden rounded-[10px] transition-all duration-200 group border border-[color:var(--border-subtle)] hover:border-[color:var(--accent-blue)] hover:-translate-y-[1px] hover:shadow-[0_0_18px_rgba(60,130,255,0.25)]"
             style={{
-                background: 'linear-gradient(135deg, var(--bg-panel) 0%, #090b12 100%)',
+                background: 'linear-gradient(135deg, #0c0f18, #090b12)',
                 padding: gridCount >= 25 ? '8px 6px 4px 6px' : '12px 8px 6px 8px',
             }}
         >

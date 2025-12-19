@@ -120,8 +120,7 @@ export function computeRangeMetric(
             high: 0,
             low: 0,
             abs: 0,
-            pct: 0,
-            inactive: true
+            pct: 0
         };
     }
 
@@ -141,8 +140,7 @@ export function computeRangeMetric(
             high: high === -Infinity ? 0 : high,
             low: low === Infinity ? 0 : low,
             abs: 0,
-            pct: 0,
-            inactive: true
+            pct: 0
         };
     }
 
@@ -345,88 +343,63 @@ export function computeDailyExtremumMetric(
 }
 
 // ============================================================================
-// GROWTH METRIC (VOLUME ACCELERATION)
+// GROWTH METRIC (gVolume)
 // ============================================================================
 
 /**
- * Compute growth (gVolume) metric.
+ * Compute growth metric (gVolume).
  * 
- * This function detects volume acceleration by comparing recent 15-minute
- * volume to the average 15-minute volume over the past 4 hours.
+ * This function identifies "unusual" volume activity by comparing recent
+ * short-term volume to a longer-term baseline.
  * 
  * **Specification (5.4.4):**
- * - Baseline: Average 15m volume over 4 hours = volume_4h / 16
- * - Current: volume_15m
- * - Ratio: current / baseline
- * - Delta: ratio - 1
- * 
- * **Formulas:**
- * ```
- * Baseline Per 15m = Volume_4h / 16
- * Ratio = Volume_15m / Baseline Per 15m
- * Delta = Ratio - 1
- * ```
+ * - Current window: 15m
+ * - Baseline window: 4h
+ * - Baseline per 15m = 4h Volume / 16
+ * - Ratio = 15m Volume / Baseline per 15m
+ * - Delta = 15m Volume - Baseline per 15m
  * 
  * **Algorithm:**
- * 1. Calculate baseline: average 15m volume over 4h period
- * 2. Divide current 15m volume by baseline to get ratio
- * 3. Calculate delta (ratio - 1) for easier interpretation
- * 
- * **Interpretation:**
- * - Ratio = 1.0 → Normal volume (same as average)
- * - Ratio = 2.0 → 2x normal volume (100% increase)
- * - Ratio = 3.0 → 3x normal volume (200% increase)
- * - Delta = 0.0 → No change from average
- * - Delta = 1.0 → 100% increase from average
+ * 1. Calculate baseline volume per 15-minute interval (4h volume / 16)
+ * 2. Calculate ratio of current 15m volume to baseline
+ * 3. Calculate absolute difference (delta)
  * 
  * **Edge Cases:**
- * - Baseline <= 0 → Returns zeros (no valid baseline)
- * - Negative volumes → Should not happen, but handled
- * - Zero current volume → Valid, returns ratio of 0
+ * - Baseline is 0 → Ratio = 0, Delta = current volume
+ * - Negative volumes → Handled as-is
  * 
- * **Example:**
- * ```typescript
- * const metric = computeGrowthMetric(5000000, 40000000);
- * // baselinePer15m = 40000000 / 16 = 2500000
- * // ratio = 5000000 / 2500000 = 2.0
- * // delta = 2.0 - 1 = 1.0 (100% increase)
- * ```
- * 
- * @param volume15mQuote - Current 15-minute quote volume (USDT)
- * @param volume4hQuote - 4-hour quote volume (USDT)
- * @returns GrowthMetric with baseline, ratio, and delta
+ * @param current15mQuote - Current 15-minute quote volume
+ * @param baseline4hQuote - Baseline 4-hour quote volume
+ * @returns GrowthMetric with ratio and delta
  * 
  * @pure This function has no side effects
  */
 export function computeGrowthMetric(
-    volume15mQuote: number,
-    volume4hQuote: number
+    current15mQuote: number,
+    baseline4hQuote: number
 ): GrowthMetric {
-    // Calculate baseline: average 15m volume over 4h
-    // 4 hours = 16 fifteen-minute periods
-    const baselinePer15m = volume4hQuote / 16;
+    const baselinePer15m = baseline4hQuote / 16;
 
-    // Edge case: No valid baseline
+    // Edge case: Division by zero
     if (baselinePer15m <= 0) {
         return {
             currentWindow: '15m',
             baselineWindow: '4h',
             baselinePer15m: 0,
-            current: volume15mQuote,
+            current: current15mQuote,
             ratio: 0,
-            delta: 0
+            delta: current15mQuote
         };
     }
 
-    // Calculate ratio and delta
-    const ratio = volume15mQuote / baselinePer15m;
-    const delta = ratio - 1;
+    const ratio = current15mQuote / baselinePer15m;
+    const delta = current15mQuote - baselinePer15m;
 
     return {
         currentWindow: '15m',
         baselineWindow: '4h',
         baselinePer15m,
-        current: volume15mQuote,
+        current: current15mQuote,
         ratio,
         delta
     };
@@ -462,12 +435,9 @@ export function computeSymbolMetrics(
     ticker24h: Ticker24h
 ): SymbolMetrics {
     const now = Date.now();
-
-    // Extract and validate ticker data
     const lastPrice = parseFloat(ticker24h.lastPrice) || 0;
     const high24h = parseFloat(ticker24h.highPrice) || 0;
     const low24h = parseFloat(ticker24h.lowPrice) || 0;
-    const change24h = parseFloat(ticker24h.priceChangePercent) || 0;
 
     // Compute range metrics
     const ranges = {
@@ -482,7 +452,6 @@ export function computeSymbolMetrics(
     const volume4h = computeVolumeMetric(candleBuffers.get('4h') || [], '4h', now);
 
     // 24h volume uses ticker data (as per spec 5.4.2)
-    // This ensures we have volume data even if 1h candles aren't loaded
     const volume24h = {
         window: '24h' as const,
         base: parseFloat(ticker24h.volume),
@@ -496,7 +465,6 @@ export function computeSymbolMetrics(
     };
 
     // Compute growth metric (gVolume)
-    // Compares current 15m volume to 4h average baseline
     const gVolume = computeGrowthMetric(volume15m.quote, volume4h.quote);
 
     // Compute daily extremum (dExt)
@@ -507,12 +475,12 @@ export function computeSymbolMetrics(
         marketType: 'futures',
         lastPrice,
         lastUpdateTs: now,
-        change24h,
         ranges,
         volume,
         growth: {
             gVolume
         },
-        dailyExtremum
+        dailyExtremum,
+        currentSortScore: 0
     };
 }

@@ -116,7 +116,7 @@ export interface Candle {
     low: number;
     close: number;
     volumeBase: number;
-    volumeQuote: number;
+    volumeQuote: number | null;
     trades: number | null;
     isFinal: boolean;
 }
@@ -165,7 +165,6 @@ export interface RangeMetric {
     low: number;
     abs: number;
     pct: number;
-    inactive?: boolean;
 }
 
 /**
@@ -254,24 +253,12 @@ export interface GrowthMetric {
  * 
  * Contains all calculated metrics used for ranking and display.
  * This is the primary data structure stored in the Zustand state.
- * 
- * @property symbol - Trading pair symbol
- * @property marketType - Type of market
- * @property lastPrice - Most recent price
- * @property lastUpdateTs - Timestamp of last update (milliseconds)
- * @property change24h - 24-hour price change percentage (for UI display)
- * @property ranges - Range metrics for all supported time windows
- * @property volume - Volume metrics for all supported time windows
- * @property growth - Growth metrics (currently only gVolume)
- * @property dailyExtremum - Daily extremum metric
- * @property currentSortScore - Cached sort score for current sort mode (optional)
  */
 export interface SymbolMetrics {
     symbol: string;
     marketType: MarketType;
     lastPrice: number;
     lastUpdateTs: number;
-    change24h: number;
 
     ranges: {
         '5m': RangeMetric;

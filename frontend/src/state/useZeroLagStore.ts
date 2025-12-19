@@ -5,11 +5,10 @@ import type {
     Interval,
     SymbolInfo,
     SymbolMetrics,
-    SymbolTopEntry,
-    Candle
+    SymbolTopEntry
 } from '../core/types';
 
-export type ApiStatus = 'ok' | 'rate_limited' | 'error' | 'loading';
+export type ApiStatus = 'ok' | 'rate_limited' | 'error';
 
 export interface ZeroLagState {
     // ========== CONTROLS ==========
@@ -27,31 +26,21 @@ export interface ZeroLagState {
 
     metricsBySymbol: Record<string, SymbolMetrics>;
     rankings: Record<SortMode, SymbolTopEntry[]>;
-    candles: Record<string, Candle[]>; // Key: "symbol:interval"
-    searchQuery: string;
-    page: number;
-    bootstrapProgress: number; // 0-100
-    bootstrapStage: string;    // current stage description
 
     // ========== ACTIONS ==========
     setSortMode: (mode: SortMode) => void;
     setInterval: (interval: Interval) => void;
     setCount: (count: 4 | 9 | 16 | 25) => void;
-    setSearchQuery: (query: string) => void;
-    setPage: (page: number) => void;
 
     setApiStatus: (status: ApiStatus) => void;
     setWsConnected: (connected: boolean) => void;
-    setBootstrapProgress: (progress: number, stage?: string) => void;
 
     setSymbols: (symbols: Record<string, SymbolInfo>) => void;
     setActiveSymbols: (symbols: string[]) => void;
 
     upsertMetrics: (symbol: string, metrics: SymbolMetrics) => void;
-    setAllMetrics: (metrics: Record<string, SymbolMetrics>) => void;
+    updateMetricsBatch: (metrics: Record<string, SymbolMetrics>) => void;
     setRankings: (rankings: Record<SortMode, SymbolTopEntry[]>) => void;
-    setCandlesForSymbol: (symbol: string, interval: Interval, candles: Candle[]) => void;
-    setAllCandles: (candles: Record<string, Candle[]>) => void;
 }
 
 // Initial state
@@ -73,12 +62,7 @@ const initialState: Partial<ZeroLagState> = {
         volume_15m: [],
         volume_24h: [],
         gvolume: []
-    },
-    candles: {},
-    searchQuery: '',
-    page: 1,
-    bootstrapProgress: 0,
-    bootstrapStage: ''
+    }
 };
 
 export const useZeroLagStore = create<ZeroLagState>((set) => ({
@@ -87,15 +71,9 @@ export const useZeroLagStore = create<ZeroLagState>((set) => ({
     setSortMode: (mode) => set({ sortMode: mode }),
     setInterval: (interval) => set({ interval }),
     setCount: (count) => set({ count }),
-    setSearchQuery: (query) => set({ searchQuery: query }),
-    setPage: (page) => set({ page }),
 
     setApiStatus: (status) => set({ apiStatus: status }),
     setWsConnected: (connected) => set({ wsConnected: connected }),
-    setBootstrapProgress: (progress, stage) => set((state) => ({
-        bootstrapProgress: progress,
-        bootstrapStage: stage !== undefined ? stage : state.bootstrapStage
-    })),
 
     setSymbols: (symbols) => set({ symbols }),
     setActiveSymbols: (symbols) => set({ activeSymbols: symbols }),
@@ -107,30 +85,14 @@ export const useZeroLagStore = create<ZeroLagState>((set) => ({
         }
     })),
 
-    setAllMetrics: (metrics) => set((state) => ({
+    updateMetricsBatch: (metrics) => set((state) => ({
         metricsBySymbol: {
             ...state.metricsBySymbol,
             ...metrics
         }
     })),
-
-    setRankings: (rankings) => set({ rankings }),
-
-    setCandlesForSymbol: (symbol, interval, candles) => set((state) => ({
-        candles: {
-            ...state.candles,
-            [`${symbol}:${interval}`]: candles
-        }
-    })),
-
-    setAllCandles: (candles) => set((state) => ({
-        candles: {
-            ...state.candles,
-            ...candles
-        }
-    }))
+    setRankings: (rankings) => set({ rankings })
 }));
-
 
 /**
  * Derived selector: visible symbols
@@ -143,21 +105,6 @@ export function useVisibleSymbols(): SymbolTopEntry[] {
     return useMemo(() => {
         const ranking = rankings[sortMode] || [];
         return ranking.slice(0, count);
-    }, [rankings, sortMode, count]);
-}
-
-export function usePage(): number {
-    return useZeroLagStore(state => state.page);
-}
-
-export function useTotalPages(): number {
-    const sortMode = useZeroLagStore(state => state.sortMode);
-    const count = useZeroLagStore(state => state.count);
-    const rankings = useZeroLagStore(state => state.rankings);
-
-    return useMemo(() => {
-        const ranking = rankings[sortMode] || [];
-        return Math.ceil(ranking.length / count);
     }, [rankings, sortMode, count]);
 }
 

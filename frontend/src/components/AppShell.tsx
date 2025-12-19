@@ -33,8 +33,8 @@ export const AppShell: React.FC = () => {
             {/* Top Navigation Bar - Fixed height ~52px */}
             <TopBar />
 
-            {/* Main Content Area - flex-1, overflow-auto */}
-            <main className="flex-1 overflow-auto relative mt-6">
+            {/* Main Content Area - flex-1 */}
+            <main className="flex-1 relative mt-6 min-h-0">
                 <ChartGrid />
             </main>
         </div>
