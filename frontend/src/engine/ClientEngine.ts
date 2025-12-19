@@ -653,7 +653,7 @@ export class ClientEngine {
             this.ensureRequiredIntervals(symbol, newMode).catch(console.error);
         });
 
-        this.syncSubscriptions();
+        this.syncSubscriptions().catch(console.error);
     }
 
     /**
@@ -687,8 +687,8 @@ export class ClientEngine {
         // 4. Recompute all metrics and rankings
         this.recomputeAllMetrics();
 
-        // 5. Sync subscriptions for new interval
-        this.syncSubscriptions();
+        // 5. Sync subscriptions for new interval (force unsubscribe old ones)
+        await this.syncSubscriptions(true);
     }
 
     private getVisibleSymbols(): string[] {
@@ -701,51 +701,56 @@ export class ClientEngine {
      */
     private onCountChange(newCount: number): void {
         console.log(`[ClientEngine] Count changed to ${newCount}`);
-        this.syncSubscriptions();
+        this.syncSubscriptions().catch(console.error);
     }
 
     /**
      * Synchronize WebSocket subscriptions based on current visible symbols
      * 
-     * Implements subscription diffing to only subscribe/unsubscribe changed symbols.
+     * Implements surgical updates and batched subscriptions to reduce churn.
      */
-    private syncSubscriptions(): void {
+    private async syncSubscriptions(forceUnsubscribe: boolean = false): Promise<void> {
         if (!this.store.wsConnected) return;
 
         const interval = this.store.interval;
+
+        // Target ALL active symbols for the current interval to keep rankings fresh
+        const targetSubscriptions = new Set(this.activeSymbols.map(s => `${s}:${interval}`));
+
+        // Still track visible symbols for StateSyncManager (throttling logic)
         const rankings = this.store.rankings[this.store.sortMode] || [];
         const visibleSymbols = rankings.slice(0, this.store.count).map(r => r.info.symbol);
-
-        const targetSubscriptions = new Set(visibleSymbols.map(s => `${s}:${interval}`));
-
-        // Update visible symbols in StateSyncManager
         this.stateSyncManager.setVisibleSymbols(visibleSymbols);
 
-        // 1. Unsubscribe from symbols no longer visible
-        const toUnsubscribe = [...this.subscriptions].filter(sub => !targetSubscriptions.has(sub));
-        for (const sub of toUnsubscribe) {
-            const [symbol, inv] = sub.split(':');
-            this.provider.unsubscribeCandles(symbol, inv as Interval);
-            this.subscriptions.delete(sub);
-        }
-
-        // 2. Subscribe to new visible symbols
-        for (const sub of targetSubscriptions) {
-            if (!this.subscriptions.has(sub)) {
-                const [symbol, inv] = sub.split(':');
-                this.provider.subscribeCandles(symbol, inv as Interval, () => {
-                    // Global onKline handler takes care of the logic
+        // 1. Surgical Unsubscribe: Only if forced (e.g. interval change)
+        // This reduces churn during sort/count changes
+        if (forceUnsubscribe) {
+            const toUnsubscribe = [...this.subscriptions].filter(sub => !targetSubscriptions.has(sub));
+            if (toUnsubscribe.length > 0) {
+                const streams = toUnsubscribe.map(sub => {
+                    const [symbol, inv] = sub.split(':');
+                    return this.provider.buildStreamName(symbol, inv as Interval);
                 });
-                this.subscriptions.add(sub);
+                await this.provider.unsubscribe(streams);
+                toUnsubscribe.forEach(sub => this.subscriptions.delete(sub));
             }
         }
 
-        console.log(`[ClientEngine] Subscriptions synced: ${this.subscriptions.size} active`);
+        // 2. Batched Subscribe: Add only what's missing
+        const newSubs = [...targetSubscriptions].filter(sub => !this.subscriptions.has(sub));
+        if (newSubs.length > 0) {
+            const streams = newSubs.map(sub => {
+                const [symbol, inv] = sub.split(':');
+                return this.provider.buildStreamName(symbol, inv as Interval);
+            });
+
+            await this.provider.subscribe(streams);
+            newSubs.forEach(sub => this.subscriptions.add(sub));
+
+            console.log(`[ClientEngine] Subscriptions synced: ${this.subscriptions.size} active (Added ${newSubs.length})`);
+        }
     }
 
-    /**
-     * Unsubscribe from all active streams
-     */
     private unsubscribeAll(): void {
         for (const sub of this.subscriptions) {
             const [symbol, inv] = sub.split(':');

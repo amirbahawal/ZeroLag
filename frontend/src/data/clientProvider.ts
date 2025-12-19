@@ -403,6 +403,18 @@ export class ClientBinanceProvider implements DataProvider {
         return this.wsManager.subscribe(symbol, interval, callback);
     }
 
+    public async subscribe(streams: string[]): Promise<void> {
+        return this.wsManager.subscribe(streams);
+    }
+
+    public async unsubscribe(streams: string[]): Promise<void> {
+        return this.wsManager.unsubscribe(streams);
+    }
+
+    public buildStreamName(symbol: string, interval: Interval): string {
+        return this.wsManager.buildStreamName(symbol, interval);
+    }
+
     /**
      * Unsubscribe from candle updates for a symbol
      * 
@@ -412,8 +424,8 @@ export class ClientBinanceProvider implements DataProvider {
      * @example
      * provider.unsubscribeCandles('BTCUSDT', '1h');
      */
-    public unsubscribeCandles(symbol: string, interval: Interval): void {
-        this.wsManager.unsubscribe(symbol, interval);
+    public async unsubscribeCandles(symbol: string, interval: Interval): Promise<void> {
+        return this.wsManager.unsubscribe(symbol, interval);
     }
 
     /**

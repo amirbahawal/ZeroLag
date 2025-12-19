@@ -96,7 +96,7 @@ export class BinanceWebSocketManager {
     private shouldReconnect = true;
     private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
     private lastPongTime = 0;
-    private heartbeatIntervalMs = 30000; // 30 seconds
+    private heartbeatIntervalMs = 60000; // 60 seconds
 
     /**
      * Get reconnect delay with exponential backoff
@@ -121,10 +121,11 @@ export class BinanceWebSocketManager {
                 return;
             }
 
-            // Check if we received a pong recently
-            const timeSinceLastPong = Date.now() - this.lastPongTime;
-            if (timeSinceLastPong > this.heartbeatIntervalMs * 2) {
-                console.warn('[Binance WS] No response to heartbeat, reconnecting...');
+            // Check if we received any message recently (stale connection check)
+            // Increased to 3 minutes to allow for low-volatility periods
+            const timeSinceLastMessage = Date.now() - this.lastPongTime;
+            if (timeSinceLastMessage > 180000) { // 3 minutes
+                console.warn('[Binance WS] Connection stale (no data for 3m), reconnecting...');
                 this.ws.close();
                 return;
             }
@@ -221,18 +222,18 @@ export class BinanceWebSocketManager {
      * Overload 1: Raw stream strings
      * Overload 2: Symbol/Interval/Callback helper
      */
-    public subscribe(streams: string[]): void;
+    public subscribe(streams: string[]): Promise<void>;
     public subscribe(symbol: string, interval: Interval, callback: CandleCallback): Promise<void>;
-    public subscribe(
+    public async subscribe(
         arg1: string[] | string,
         arg2?: Interval,
         arg3?: CandleCallback
-    ): void | Promise<void> {
+    ): Promise<void> {
         // Overload 1: Raw streams
         if (Array.isArray(arg1)) {
             const streams = arg1;
             streams.forEach(s => this.rawSubscriptions.add(s));
-            this.sendSubscribe(streams);
+            await this.sendSubscribe(streams);
             return;
         }
 
@@ -241,7 +242,7 @@ export class BinanceWebSocketManager {
         const interval = arg2!;
         const callback = arg3!;
 
-        return this.subscribeToCandles(symbol, interval, callback);
+        await this.subscribeToCandles(symbol, interval, callback);
     }
 
     /**
@@ -269,7 +270,7 @@ export class BinanceWebSocketManager {
 
         // If connected, send subscribe message immediately
         if (this.ws?.readyState === WebSocket.OPEN) {
-            this.sendSubscribe([streamKey]);
+            await this.sendSubscribe([streamKey]);
         } else if (!this.isConnecting && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
             // If not connected and not connecting, start connection
             // The handleOpen will handle subscribing to all streams in the map
@@ -306,18 +307,18 @@ export class BinanceWebSocketManager {
      * Overload 1: Raw stream strings
      * Overload 2: Symbol/Interval/Callback helper
      */
-    public unsubscribe(streams: string[]): void;
-    public unsubscribe(symbol: string, interval: Interval, callback?: CandleCallback): void;
-    public unsubscribe(
+    public unsubscribe(streams: string[]): Promise<void>;
+    public unsubscribe(symbol: string, interval: Interval, callback?: CandleCallback): Promise<void>;
+    public async unsubscribe(
         arg1: string[] | string,
         arg2?: Interval,
         arg3?: CandleCallback
-    ): void {
+    ): Promise<void> {
         // Overload 1: Raw streams
         if (Array.isArray(arg1)) {
             const streams = arg1;
             streams.forEach(s => this.rawSubscriptions.delete(s));
-            this.sendUnsubscribe(streams);
+            await this.sendUnsubscribe(streams);
             return;
         }
 
@@ -326,13 +327,13 @@ export class BinanceWebSocketManager {
         const interval = arg2!;
         const callback = arg3;
 
-        this.unsubscribeFromCandles(symbol, interval, callback);
+        await this.unsubscribeFromCandles(symbol, interval, callback);
     }
 
     /**
      * Internal implementation for candle unsubscription
      */
-    private unsubscribeFromCandles(symbol: string, interval: Interval, callback?: CandleCallback): void {
+    private async unsubscribeFromCandles(symbol: string, interval: Interval, callback?: CandleCallback): Promise<void> {
         const streamKey = this.buildStreamName(symbol, interval);
         const subscription = this.subscriptions.get(streamKey);
 
@@ -351,7 +352,7 @@ export class BinanceWebSocketManager {
 
             // Send unsubscribe message if connected
             if (this.ws?.readyState === WebSocket.OPEN) {
-                this.sendUnsubscribe([streamKey]);
+                await this.sendUnsubscribe([streamKey]);
             }
         }
     }
@@ -403,45 +404,53 @@ export class BinanceWebSocketManager {
        PRIVATE METHODS
        ============================================= */
 
-    private batchSubscribe(streams: string[]): void {
+    private async sendSubscribe(streams: string[]): Promise<void> {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || streams.length === 0) {
+            return;
+        }
+
         const BATCH_SIZE = 50;
         for (let i = 0; i < streams.length; i += BATCH_SIZE) {
             const batch = streams.slice(i, i + BATCH_SIZE);
-            this.sendSubscribe(batch);
+            const message = {
+                method: 'SUBSCRIBE',
+                params: batch,
+                id: Date.now() + Math.floor(i / BATCH_SIZE),
+            };
+
+            this.ws.send(JSON.stringify(message));
+            console.log(`[Binance WS] Sent SUBSCRIBE for ${batch.length} streams`);
+
+            if (i + BATCH_SIZE < streams.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
         }
     }
 
-    private sendSubscribe(streams: string[]): void {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+    private async sendUnsubscribe(streams: string[]): Promise<void> {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || streams.length === 0) {
             return;
         }
 
-        const message = {
-            method: 'SUBSCRIBE',
-            params: streams,
-            id: Date.now(),
-        };
+        const BATCH_SIZE = 50;
+        for (let i = 0; i < streams.length; i += BATCH_SIZE) {
+            const batch = streams.slice(i, i + BATCH_SIZE);
+            const message = {
+                method: 'UNSUBSCRIBE',
+                params: batch,
+                id: Date.now() + Math.floor(i / BATCH_SIZE),
+            };
 
-        this.ws.send(JSON.stringify(message));
-        console.log(`[Binance WS] Sent SUBSCRIBE for ${streams.join(', ')}`);
-    }
+            this.ws.send(JSON.stringify(message));
+            console.log(`[Binance WS] Sent UNSUBSCRIBE for ${batch.length} streams`);
 
-    private sendUnsubscribe(streams: string[]): void {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-            return;
+            if (i + BATCH_SIZE < streams.length) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+            }
         }
-
-        const message = {
-            method: 'UNSUBSCRIBE',
-            params: streams,
-            id: Date.now(),
-        };
-
-        this.ws.send(JSON.stringify(message));
-        console.log(`[Binance WS] Sent UNSUBSCRIBE for ${streams.join(', ')}`);
     }
 
-    private handleOpen(): void {
+    private async handleOpen(): Promise<void> {
         console.log('[Binance WS] Connection opened');
         this.isConnecting = false;
         this.reconnectAttempts = 0; // Reset on successful connection
@@ -458,7 +467,7 @@ export class BinanceWebSocketManager {
 
         if (allStreams.length > 0) {
             console.log(`[Binance WS] Batch subscribing to ${allStreams.length} streams...`);
-            this.batchSubscribe(allStreams);
+            await this.sendSubscribe(allStreams);
         }
     }
 
