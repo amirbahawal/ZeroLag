@@ -31,6 +31,25 @@ export const TopBar: React.FC = () => {
 
             {/* RIGHT SECTION: Count Selector + Status */}
             <div className="flex-1 flex items-center justify-end gap-6">
+                {/* Status Banner */}
+                {apiStatus === 'rate_limited' && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[color:var(--accent-amber)]/10 border border-[color:var(--accent-amber)]/20 animate-pulse">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-amber)]" />
+                        <span className="text-[11px] font-medium text-[color:var(--accent-amber)]">
+                            Binance API is rate-limiting your IP. Data may update slowly.
+                        </span>
+                    </div>
+                )}
+
+                {apiStatus === 'error' && (
+                    <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[color:var(--accent-red)]/10 border border-[color:var(--accent-red)]/20 animate-pulse">
+                        <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-red)]" />
+                        <span className="text-[11px] font-medium text-[color:var(--accent-red)]">
+                            Binance API error. Check your connection.
+                        </span>
+                    </div>
+                )}
+
                 <CountSelector />
 
                 {/* Status Indicators */}

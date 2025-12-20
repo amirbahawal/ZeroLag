@@ -400,7 +400,8 @@ export class ClientBinanceProvider implements DataProvider {
         interval: Interval,
         callback: CandleCallback
     ): Promise<void> {
-        return this.wsManager.subscribe(symbol, interval, callback);
+        // SPEC: Use adapter method to ensure correct stream name and callback registration
+        return this.wsManager.subscribeWithCallback(symbol, interval, callback);
     }
 
     public async subscribe(streams: string[]): Promise<void> {
@@ -425,7 +426,8 @@ export class ClientBinanceProvider implements DataProvider {
      * provider.unsubscribeCandles('BTCUSDT', '1h');
      */
     public async unsubscribeCandles(symbol: string, interval: Interval): Promise<void> {
-        return this.wsManager.unsubscribe(symbol, interval);
+        // SPEC: Use adapter method to ensure correct stream name and callback removal
+        return this.wsManager.unsubscribeWithCallback(symbol, interval);
     }
 
     /**

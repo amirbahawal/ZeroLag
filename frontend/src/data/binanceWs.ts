@@ -1,8 +1,9 @@
 /**
  * Binance Futures WebSocket Manager
  * 
- * Manages WebSocket connections to Binance Futures for real-time candle updates.
- * Handles subscriptions, auto-reconnection, and message parsing.
+ * Manages a single multiplexed WebSocket connection to Binance Futures.
+ * Spec 4.2: Single active WebSocket instance with subscribe/unsubscribe by stream ID.
+ * Spec 4.3: Reconnect logic and error handling.
  */
 
 import type { Interval, Candle } from '../core/types';
@@ -12,68 +13,30 @@ import { useZeroLagStore } from '../state/useZeroLagStore';
    TYPES
    ============================================= */
 
-/** WebSocket callback for candle updates */
 export type CandleCallback = (candle: Candle) => void;
 
-/** Stream identifier */
-type StreamKey = string; // Format: "symbol@interval"
-
-/** Subscription info */
-interface Subscription {
-    symbol: string;
-    interval: Interval;
-    callbacks: Set<CandleCallback>;
-}
-
-/** Binance WebSocket kline message structure */
-export interface BinanceKlineMessage {
-    e: 'kline'; // Event type
-    E: number; // Event time
-    s: string; // Symbol
+interface BinanceKlineMessage {
+    e: 'kline';
+    E: number;
+    s: string;
     k: {
-        t: number; // Kline start time
-        T: number; // Kline close time
-        s: string; // Symbol
-        i: string; // Interval
-        f: number; // First trade ID
-        L: number; // Last trade ID
-        o: string; // Open price
-        c: string; // Close price
-        h: string; // High price
-        l: string; // Low price
-        v: string; // Base asset volume
-        n: number; // Number of trades
-        x: boolean; // Is this kline closed?
-        q: string; // Quote asset volume
-        V: string; // Taker buy base asset volume
-        Q: string; // Taker buy quote asset volume
-        B: string; // Ignore
-    };
-}
-
-/**
- * Parse kline message into Candle object
- */
-export function parseKlineMessage(msg: BinanceKlineMessage): Candle {
-    if (!msg || !msg.k) {
-        throw new Error('Invalid kline message');
-    }
-
-    const kline = msg.k;
-
-    return {
-        symbol: kline.s,
-        interval: kline.i as Interval,
-        openTime: kline.t,
-        closeTime: kline.T,
-        open: parseFloat(kline.o),
-        high: parseFloat(kline.h),
-        low: parseFloat(kline.l),
-        close: parseFloat(kline.c),
-        volumeBase: parseFloat(kline.v),
-        volumeQuote: parseFloat(kline.q),
-        trades: kline.n,
-        isFinal: kline.x,
+        t: number;
+        T: number;
+        s: string;
+        i: string;
+        f: number;
+        L: number;
+        o: string;
+        c: string;
+        h: string;
+        l: string;
+        v: string;
+        n: number;
+        x: boolean;
+        q: string;
+        V: string;
+        Q: string;
+        B: string;
     };
 }
 
@@ -82,217 +45,244 @@ export function parseKlineMessage(msg: BinanceKlineMessage): Candle {
    ============================================= */
 
 export class BinanceWebSocketManager {
+    private static instance: BinanceWebSocketManager;
     private ws: WebSocket | null = null;
     private baseUrl = 'wss://fstream.binance.com/ws';
-    private subscriptions = new Map<StreamKey, Subscription>();
-    private rawSubscriptions = new Set<string>(); // Track raw streams
-    private globalListeners = new Set<(candle: Candle) => void>(); // Global listeners
-    private reconnectTimeout: ReturnType<typeof setTimeout> | null = null;
-    private reconnectAttempts = 0;
-    private maxReconnectAttempts = 10;
-    private baseReconnectDelay = 5000; // Start at 5 seconds
-    private maxReconnectDelay = 60000; // Max 60 seconds
-    private isConnecting = false;
+
+    // Track active subscriptions (stream names)
+    private activeSubscriptions = new Set<string>();
+
+    // Callbacks mapped by stream name
+    private streamCallbacks = new Map<string, Set<CandleCallback>>();
+
+    // Global listeners
+    private globalListeners = new Set<(candle: Candle) => void>();
+
+    // Reconnection control
     private shouldReconnect = true;
-    private heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-    private lastPongTime = 0;
-    private heartbeatIntervalMs = 60000; // 60 seconds
+    private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+    private isConnecting = false;
 
-    /**
-     * Get reconnect delay with exponential backoff
-     */
-    private getReconnectDelay(): number {
-        const delay = Math.min(
-            this.baseReconnectDelay * Math.pow(2, this.reconnectAttempts),
-            this.maxReconnectDelay
-        );
-        return delay;
-    }
+    private constructor() { }
 
-    /**
-     * Start heartbeat to detect stale connections
-     */
-    private startHeartbeat(): void {
-        this.stopHeartbeat();
-        this.lastPongTime = Date.now();
-
-        this.heartbeatInterval = setInterval(() => {
-            if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-                return;
-            }
-
-            // Check if we received any message recently (stale connection check)
-            // Increased to 3 minutes to allow for low-volatility periods
-            const timeSinceLastMessage = Date.now() - this.lastPongTime;
-            if (timeSinceLastMessage > 180000) { // 3 minutes
-                console.warn('[Binance WS] Connection stale (no data for 3m), reconnecting...');
-                this.ws.close();
-                return;
-            }
-
-            // Send ping
-            try {
-                this.ws.send(JSON.stringify({ method: 'PING' }));
-            } catch {
-                // Ignore send errors
-            }
-        }, this.heartbeatIntervalMs);
-    }
-
-    /**
-     * Stop heartbeat
-     */
-    private stopHeartbeat(): void {
-        if (this.heartbeatInterval) {
-            clearInterval(this.heartbeatInterval);
-            this.heartbeatInterval = null;
+    static getInstance(): BinanceWebSocketManager {
+        if (!BinanceWebSocketManager.instance) {
+            BinanceWebSocketManager.instance = new BinanceWebSocketManager();
         }
+        return BinanceWebSocketManager.instance;
     }
 
     /**
      * Connect to Binance WebSocket
+     * Spec 4.2: Maintain one active WebSocket instance
      */
     public async connect(): Promise<void> {
-        if (this.ws?.readyState === WebSocket.OPEN) {
+        if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) {
+            console.log('[WS] Already connected or connecting');
             return;
         }
 
-        if (this.isConnecting) {
-            // Wait for existing connection attempt
-            return new Promise((resolve) => {
-                const check = setInterval(() => {
-                    if (!this.isConnecting) {
-                        clearInterval(check);
-                        resolve();
-                    }
-                }, 100);
-            });
-        }
-
+        if (this.isConnecting) return;
         this.isConnecting = true;
-        this.shouldReconnect = true; // Reset flag
+        this.shouldReconnect = true;
+
+        console.log('[WS] Connecting to Binance Futures WebSocket...');
 
         try {
-            // Connect to base endpoint
-            const url = this.baseUrl;
-
-            console.log('[Binance WS] Connecting to:', url);
-            this.ws = new WebSocket(url);
+            this.ws = new WebSocket(this.baseUrl);
 
             this.ws.onopen = this.handleOpen.bind(this);
             this.ws.onmessage = this.handleMessage.bind(this);
             this.ws.onerror = this.handleError.bind(this);
             this.ws.onclose = this.handleClose.bind(this);
-
-            // Wait for connection to open
-            await new Promise<void>((resolve, reject) => {
-                const timeout = setTimeout(() => {
-                    reject(new Error('WebSocket connection timeout'));
-                }, 10000);
-
-                this.ws!.addEventListener('open', () => {
-                    clearTimeout(timeout);
-                    resolve();
-                });
-
-                this.ws!.addEventListener('error', () => {
-                    clearTimeout(timeout);
-                    reject(new Error('WebSocket connection failed'));
-                });
-            });
         } catch (error) {
-            console.error('[Binance WS] Connection failed:', error);
+            console.error('[WS] Connection creation failed:', error);
             this.isConnecting = false;
-            throw error;
-        } finally {
-            this.isConnecting = false;
+            this.handleClose({ code: 1006, reason: 'Connection failed', wasClean: false } as CloseEvent);
         }
     }
 
-    /**
-     * Helper to build stream name
-     */
-    public buildStreamName(symbol: string, interval: Interval): string {
-        return `${symbol.toLowerCase()}@kline_${interval}`;
+    private handleOpen(): void {
+        console.log('[WS] Connected successfully');
+        this.isConnecting = false;
+        useZeroLagStore.getState().setWsConnected(true);
+
+        // Spec 4.3: On reconnect, resubscribe to all active streams
+        if (this.activeSubscriptions.size > 0) {
+            const streams = Array.from(this.activeSubscriptions);
+            console.log(`[WS] Resubscribing to ${streams.length} streams`);
+            this.sendSubscribe(streams);
+        }
+    }
+
+    private handleMessage(event: MessageEvent): void {
+        try {
+            const data = JSON.parse(event.data);
+
+            // Handle kline events only (Spec 4.2: No other streams)
+            if (data.e === 'kline') {
+                const candle = this.parseKlineToCandle(data);
+                if (candle) {
+                    this.notifyListeners(candle);
+                }
+            }
+        } catch (error) {
+            console.error('[WS] Error parsing message:', error);
+        }
+    }
+
+    private handleError(event: Event): void {
+        console.error('[WS] WebSocket error:', event);
+        // Error will usually trigger onClose, but we set state here just in case
+        useZeroLagStore.getState().setWsConnected(false);
+    }
+
+    private handleClose(event: CloseEvent): void {
+        console.log(`[WS] Connection closed: ${event.code} ${event.reason}`);
+        this.ws = null;
+        this.isConnecting = false;
+        useZeroLagStore.getState().setWsConnected(false);
+
+        // Spec 4.3: On close or error, try to reconnect after 5 seconds
+        if (this.shouldReconnect) {
+            console.log('[WS] Reconnecting in 5 seconds...');
+            if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+
+            this.reconnectTimer = setTimeout(() => {
+                this.connect();
+            }, 5000); // Exactly 5 seconds as per spec
+        }
     }
 
     /**
      * Subscribe to streams
-     * 
-     * Overload 1: Raw stream strings
-     * Overload 2: Symbol/Interval/Callback helper
+     * Spec 4.2: Allow subscribe for streams by ID
      */
-    public subscribe(streams: string[]): Promise<void>;
-    public subscribe(symbol: string, interval: Interval, callback: CandleCallback): Promise<void>;
-    public async subscribe(
-        arg1: string[] | string,
-        arg2?: Interval,
-        arg3?: CandleCallback
-    ): Promise<void> {
-        // Overload 1: Raw streams
-        if (Array.isArray(arg1)) {
-            const streams = arg1;
-            streams.forEach(s => this.rawSubscriptions.add(s));
-            await this.sendSubscribe(streams);
-            return;
+    public subscribe(streams: string[]): Promise<void> {
+        // Add to active subscriptions
+        streams.forEach(stream => this.activeSubscriptions.add(stream));
+
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            this.sendSubscribe(streams);
+        } else if (!this.isConnecting && !this.ws) {
+            this.connect();
         }
-
-        // Overload 2: Symbol/Interval/Callback
-        const symbol = arg1;
-        const interval = arg2!;
-        const callback = arg3!;
-
-        await this.subscribeToCandles(symbol, interval, callback);
+        return Promise.resolve();
     }
 
     /**
-     * Internal implementation for candle subscription
+     * Helper to subscribe with callback (Adapter for existing code)
      */
-    private async subscribeToCandles(
-        symbol: string,
-        interval: Interval,
-        callback: CandleCallback
-    ): Promise<void> {
-        const streamKey = this.buildStreamName(symbol, interval);
-        const subscription = this.subscriptions.get(streamKey);
+    public subscribeWithCallback(symbol: string, interval: Interval, callback: CandleCallback): Promise<void> {
+        const stream = this.buildStreamName(symbol, interval);
 
-        if (subscription) {
-            subscription.callbacks.add(callback);
-            return;
+        if (!this.streamCallbacks.has(stream)) {
+            this.streamCallbacks.set(stream, new Set());
         }
+        this.streamCallbacks.get(stream)?.add(callback);
 
-        // New subscription
-        this.subscriptions.set(streamKey, {
-            symbol,
-            interval,
-            callbacks: new Set([callback]),
+        return this.subscribe([stream]);
+    }
+
+    /**
+     * Unsubscribe from streams
+     * Spec 4.2: Allow unsubscribe for streams by ID
+     */
+    public unsubscribe(streams: string[]): Promise<void> {
+        // Remove from active subscriptions
+        streams.forEach(stream => {
+            this.activeSubscriptions.delete(stream);
+            this.streamCallbacks.delete(stream);
         });
 
-        // If connected, send subscribe message immediately
-        if (this.ws?.readyState === WebSocket.OPEN) {
-            await this.sendSubscribe([streamKey]);
-        } else if (!this.isConnecting && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
-            // If not connected and not connecting, start connection
-            // The handleOpen will handle subscribing to all streams in the map
-            await this.connect();
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+            const message = {
+                method: 'UNSUBSCRIBE',
+                params: streams,
+                id: Date.now()
+            };
+            this.ws.send(JSON.stringify(message));
+            console.log('[WS] Unsubscribed from:', streams);
         }
-        // If connecting, do nothing - handleOpen will pick it up
+        return Promise.resolve();
     }
 
     /**
-     * Add a listener for a symbol's kline stream
+     * Helper to unsubscribe (Adapter for existing code)
      */
-    public on(symbol: string, interval: Interval, callback: CandleCallback): void {
-        this.subscribe(symbol, interval, callback);
+    public unsubscribeWithCallback(symbol: string, interval: Interval, callback?: CandleCallback): Promise<void> {
+        const stream = this.buildStreamName(symbol, interval);
+
+        if (callback) {
+            const callbacks = this.streamCallbacks.get(stream);
+            if (callbacks) {
+                callbacks.delete(callback);
+                if (callbacks.size === 0) {
+                    this.streamCallbacks.delete(stream);
+                    return this.unsubscribe([stream]);
+                }
+            }
+        } else {
+            this.streamCallbacks.delete(stream);
+            return this.unsubscribe([stream]);
+        }
+        return Promise.resolve();
+    }
+
+    private sendSubscribe(streams: string[]): void {
+        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || streams.length === 0) return;
+
+        // Send in one go (No batching as per "minimal" spec, assuming < 1024 streams)
+        const message = {
+            method: 'SUBSCRIBE',
+            params: streams,
+            id: Date.now()
+        };
+
+        this.ws.send(JSON.stringify(message));
+        console.log(`[WS] Subscribed to ${streams.length} streams`);
     }
 
     /**
-     * Register a global listener for all kline events
-     * 
-     * Useful for metrics engines or loggers that need to see all traffic.
-     * 
-     * @param callback - Function to call with every parsed candle
-     * @returns Unsubscribe function
+     * Spec 4.2: Decode incoming kline events and forward as Candle objects
+     */
+    private parseKlineToCandle(msg: BinanceKlineMessage): Candle | null {
+        try {
+            const k = msg.k;
+            return {
+                symbol: k.s,
+                interval: k.i as Interval,
+                openTime: k.t,
+                closeTime: k.T,
+                open: parseFloat(k.o),
+                high: parseFloat(k.h),
+                low: parseFloat(k.l),
+                close: parseFloat(k.c),
+                volumeBase: parseFloat(k.v),
+                volumeQuote: parseFloat(k.q),
+                trades: k.n,
+                isFinal: k.x
+            };
+        } catch (error) {
+            console.error('[WS] Error parsing kline:', error);
+            return null;
+        }
+    }
+
+    private notifyListeners(candle: Candle): void {
+        // 1. Notify global listeners
+        this.globalListeners.forEach(listener => listener(candle));
+
+        // 2. Notify specific stream subscribers
+        const stream = this.buildStreamName(candle.symbol, candle.interval);
+        const callbacks = this.streamCallbacks.get(stream);
+        if (callbacks) {
+            callbacks.forEach(cb => cb(candle));
+        }
+    }
+
+    /**
+     * Register global listener
      */
     public onKline(callback: (candle: Candle) => void): () => void {
         this.globalListeners.add(callback);
@@ -302,257 +292,35 @@ export class BinanceWebSocketManager {
     }
 
     /**
-     * Unsubscribe from streams
-     * 
-     * Overload 1: Raw stream strings
-     * Overload 2: Symbol/Interval/Callback helper
+     * Helper to add listener (Adapter)
      */
-    public unsubscribe(streams: string[]): Promise<void>;
-    public unsubscribe(symbol: string, interval: Interval, callback?: CandleCallback): Promise<void>;
-    public async unsubscribe(
-        arg1: string[] | string,
-        arg2?: Interval,
-        arg3?: CandleCallback
-    ): Promise<void> {
-        // Overload 1: Raw streams
-        if (Array.isArray(arg1)) {
-            const streams = arg1;
-            streams.forEach(s => this.rawSubscriptions.delete(s));
-            await this.sendUnsubscribe(streams);
-            return;
-        }
-
-        // Overload 2: Symbol/Interval/Callback
-        const symbol = arg1;
-        const interval = arg2!;
-        const callback = arg3;
-
-        await this.unsubscribeFromCandles(symbol, interval, callback);
+    public on(symbol: string, interval: Interval, callback: CandleCallback): void {
+        this.subscribeWithCallback(symbol, interval, callback);
     }
 
     /**
-     * Internal implementation for candle unsubscription
-     */
-    private async unsubscribeFromCandles(symbol: string, interval: Interval, callback?: CandleCallback): Promise<void> {
-        const streamKey = this.buildStreamName(symbol, interval);
-        const subscription = this.subscriptions.get(streamKey);
-
-        if (!subscription) {
-            return;
-        }
-
-        if (callback) {
-            subscription.callbacks.delete(callback);
-        }
-
-        // If no more callbacks (or forced unsubscribe), remove subscription
-        if (!callback || subscription.callbacks.size === 0) {
-            this.subscriptions.delete(streamKey);
-            console.log(`[Binance WS] Unsubscribed from ${streamKey}`);
-
-            // Send unsubscribe message if connected
-            if (this.ws?.readyState === WebSocket.OPEN) {
-                await this.sendUnsubscribe([streamKey]);
-            }
-        }
-    }
-
-    /**
-     * Remove a listener
+     * Helper to remove listener (Adapter)
      */
     public off(symbol: string, interval: Interval, callback: CandleCallback): void {
-        this.unsubscribe(symbol, interval, callback);
+        this.unsubscribeWithCallback(symbol, interval, callback);
     }
 
-    /**
-     * Disconnect WebSocket and prevent auto-reconnect
-     */
+    public buildStreamName(symbol: string, interval: Interval): string {
+        return `${symbol.toLowerCase()}@kline_${interval}`;
+    }
+
     public disconnect(): void {
         this.shouldReconnect = false;
-
-        if (this.reconnectTimeout) {
-            clearTimeout(this.reconnectTimeout);
-            this.reconnectTimeout = null;
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
         }
-
         if (this.ws) {
             this.ws.close();
             this.ws = null;
         }
-
-        console.log('[Binance WS] Disconnected');
-    }
-
-    /**
-     * Force reconnection
-     */
-    public reconnect(): void {
-        console.log('[Binance WS] Forcing reconnection...');
-        this.disconnect();
-        this.shouldReconnect = true; // Re-enable reconnect
-        this.connect().catch(console.error);
-    }
-
-    /**
-     * Close WebSocket connection
-     */
-    public close(): void {
-        this.disconnect();
-    }
-
-    /* =============================================
-       PRIVATE METHODS
-       ============================================= */
-
-    private async sendSubscribe(streams: string[]): Promise<void> {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || streams.length === 0) {
-            return;
-        }
-
-        const BATCH_SIZE = 50;
-        for (let i = 0; i < streams.length; i += BATCH_SIZE) {
-            const batch = streams.slice(i, i + BATCH_SIZE);
-            const message = {
-                method: 'SUBSCRIBE',
-                params: batch,
-                id: Date.now() + Math.floor(i / BATCH_SIZE),
-            };
-
-            this.ws.send(JSON.stringify(message));
-            console.log(`[Binance WS] Sent SUBSCRIBE for ${batch.length} streams`);
-
-            if (i + BATCH_SIZE < streams.length) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-        }
-    }
-
-    private async sendUnsubscribe(streams: string[]): Promise<void> {
-        if (!this.ws || this.ws.readyState !== WebSocket.OPEN || streams.length === 0) {
-            return;
-        }
-
-        const BATCH_SIZE = 50;
-        for (let i = 0; i < streams.length; i += BATCH_SIZE) {
-            const batch = streams.slice(i, i + BATCH_SIZE);
-            const message = {
-                method: 'UNSUBSCRIBE',
-                params: batch,
-                id: Date.now() + Math.floor(i / BATCH_SIZE),
-            };
-
-            this.ws.send(JSON.stringify(message));
-            console.log(`[Binance WS] Sent UNSUBSCRIBE for ${batch.length} streams`);
-
-            if (i + BATCH_SIZE < streams.length) {
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-        }
-    }
-
-    private async handleOpen(): Promise<void> {
-        console.log('[Binance WS] Connection opened');
-        this.isConnecting = false;
-        this.reconnectAttempts = 0; // Reset on successful connection
-
-        // Update store state
-        useZeroLagStore.getState().setWsConnected(true);
-
-        this.startHeartbeat();
-
-        // Subscribe to all pending streams (both managed and raw)
-        const managedStreams = Array.from(this.subscriptions.keys());
-        const rawStreams = Array.from(this.rawSubscriptions);
-        const allStreams = [...new Set([...managedStreams, ...rawStreams])];
-
-        if (allStreams.length > 0) {
-            console.log(`[Binance WS] Batch subscribing to ${allStreams.length} streams...`);
-            await this.sendSubscribe(allStreams);
-        }
-    }
-
-    private handleMessage(event: MessageEvent): void {
-        try {
-            const data = JSON.parse(event.data);
-
-            // Update last pong time on any message (acts as heartbeat response)
-            this.lastPongTime = Date.now();
-
-            // Handle kline events
-            if (data.e === 'kline' && data.k) {
-                this.handleKlineEvent(data as BinanceKlineMessage);
-            }
-        } catch (error) {
-            console.error('[Binance WS] Failed to parse message:', error);
-        }
-    }
-
-    private handleKlineEvent(event: BinanceKlineMessage): void {
-        try {
-            const candle = parseKlineMessage(event);
-
-            // 1. Notify global listeners
-            this.globalListeners.forEach(listener => {
-                try {
-                    listener(candle);
-                } catch (e) {
-                    console.error('[Binance WS] Global listener error:', e);
-                }
-            });
-
-            // 2. Notify specific subscribers
-            const streamKey = this.buildStreamName(candle.symbol, candle.interval);
-            const subscription = this.subscriptions.get(streamKey);
-
-            if (subscription) {
-                subscription.callbacks.forEach(callback => callback(candle));
-            }
-        } catch (error) {
-            console.error('[Binance WS] Error handling kline event:', error);
-        }
-    }
-
-    private handleError(event: Event): void {
-        console.error('[Binance WS] WebSocket error:', event);
-    }
-
-    private handleClose(event: CloseEvent): void {
-        console.log(
-            `[Binance WS] Connection closed (code: ${event.code}, reason: ${event.reason})`
-        );
-
-        this.ws = null;
-        this.isConnecting = false;
-        this.stopHeartbeat();
-
-        // Update store state
-        useZeroLagStore.getState().setWsConnected(false);
-
-        // Auto-reconnect if enabled with exponential backoff
-        if (this.shouldReconnect && (this.subscriptions.size > 0 || this.rawSubscriptions.size > 0)) {
-            if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-                console.error('[Binance WS] Max reconnection attempts reached');
-                return;
-            }
-
-            const delay = this.getReconnectDelay();
-            this.reconnectAttempts++;
-            console.log(
-                `[Binance WS] Reconnecting in ${delay / 1000}s... (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`
-            );
-
-            this.reconnectTimeout = setTimeout(() => {
-                this.connect().catch((error) => {
-                    console.error('[Binance WS] Reconnection failed:', error);
-                });
-            }, delay);
-        }
+        console.log('[WS] Disconnected');
     }
 }
 
-/* =============================================
-   SINGLETON INSTANCE
-   ============================================= */
-
-/** Default WebSocket manager instance */
-export const defaultWsManager = new BinanceWebSocketManager();
+export const defaultWsManager = BinanceWebSocketManager.getInstance();

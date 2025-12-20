@@ -77,11 +77,7 @@ export type ExchangeInfo = BinanceExchangeInfo;
 export const BINANCE_FUTURES_BASE = 'https://fapi.binance.com';
 export const BASE_URL = import.meta.env.DEV ? '' : BINANCE_FUTURES_BASE;
 
-/** Retry delays for exponential backoff (milliseconds) */
-const RETRY_DELAYS = [1000, 2000, 5000, 10000, 15000]; // More aggressive retries for unstable network
 
-/** Maximum number of retry attempts */
-const MAX_RETRIES = RETRY_DELAYS.length;
 
 /* =============================================
    ERROR TYPES
@@ -119,12 +115,7 @@ export { RestApiError as BinanceApiError }; // Alias for backward compatibility
    HELPER FUNCTIONS
    ============================================= */
 
-/**
- * Sleep for specified milliseconds
- */
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
+
 
 /**
  * Concurrency Controller
@@ -184,152 +175,20 @@ class ConcurrencyController {
 
 export const concurrencyController = new ConcurrencyController(4);
 
-/**
- * Rate Limit Manager
- * 
- * Handles 429 rate limits with exponential backoff.
- */
-class RateLimitManager {
-    private isLimited: boolean = false;
-    private backoffMs: number = 15000;
-    private retryCount: number = 0;
-
-    /**
-     * Wait if currently rate limited
-     */
-    async waitIfNeeded(): Promise<void> {
-        if (this.isLimited) {
-            console.warn(`[RateLimitManager] Waiting ${this.backoffMs}ms due to rate limit...`);
-            await sleep(this.backoffMs);
-        }
-    }
-
-    /**
-     * Mark as rate limited and trigger backoff
-     */
-    markRateLimited(): void {
-        this.isLimited = true;
-
-        // Exponential backoff: 15s -> 30s -> 60s -> 120s
-        this.backoffMs = Math.min(15000 * Math.pow(2, this.retryCount), 120000);
-        this.retryCount++;
-
-        console.warn(`[RateLimitManager] Rate limit hit! Backoff set to ${this.backoffMs}ms`);
-    }
-
-    /**
-     * Reset rate limit state after successful request
-     */
-    reset(): void {
-        if (this.isLimited) {
-            console.log('[RateLimitManager] Rate limit cleared.');
-            this.isLimited = false;
-            this.backoffMs = 15000;
-            this.retryCount = 0;
-        }
-    }
-}
-
-export const rateLimitManager = new RateLimitManager();
+import { rateLimitHandler } from './RateLimitHandler';
 
 /**
- * Make HTTP request with retry logic and rate limit handling
- */
-async function fetchWithRetry(
-    url: string,
-    options: RequestInit = {},
-    retryCount = 0
-): Promise<Response> {
-    // Check rate limit before request
-    await rateLimitManager.waitIfNeeded();
-
-    try {
-        const response = await fetch(url, {
-            ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers,
-            },
-        });
-
-        // Handle rate limiting (429)
-        if (response.status === 429) {
-            rateLimitManager.markRateLimited();
-
-            // Retry after backoff
-            await rateLimitManager.waitIfNeeded();
-            return fetchWithRetry(url, options, retryCount); // Don't increment retryCount for 429s, rely on backoff
-        }
-
-        // Handle transient 5xx errors
-        if (response.status >= 500) {
-            if (retryCount < MAX_RETRIES) {
-                const delay = RETRY_DELAYS[retryCount];
-                console.warn(`[Binance API] Server error ${response.status}. Retrying in ${delay}ms...`);
-                await sleep(delay);
-                return fetchWithRetry(url, options, retryCount + 1);
-            } else {
-                throw new RestApiError(
-                    `Server error ${response.status} after ${MAX_RETRIES} retries`,
-                    response.status,
-                    true, // isTransient
-                    await response.text()
-                );
-            }
-        }
-
-        // Handle fatal 4xx errors (excluding 429)
-        if (!response.ok) {
-            const errorText = await response.text();
-            console.error(`[Binance API] Request failed: ${url} (${response.status})`);
-
-            // Fatal error - do not retry
-            throw new RestApiError(
-                `HTTP ${response.status}: ${errorText}`,
-                response.status,
-                false, // isTransient = false
-                errorText
-            );
-        }
-
-        // Success - reset rate limit state
-        rateLimitManager.reset();
-
-        return response;
-    } catch (error) {
-        if (error instanceof RestApiError) {
-            throw error;
-        }
-
-        // Network errors - retry if we haven't exceeded max retries
-        if (retryCount < MAX_RETRIES) {
-            const delay = RETRY_DELAYS[retryCount];
-            console.warn(
-                `[Binance API] Network error. Retrying in ${delay / 1000}s... (attempt ${retryCount + 1
-                }/${MAX_RETRIES})`
-            );
-            await sleep(delay);
-            return fetchWithRetry(url, options, retryCount + 1);
-        }
-
-        // Final network failure
-        throw new RestApiError(
-            `Network error after ${MAX_RETRIES} retries: ${error instanceof Error ? error.message : 'Unknown error'}`,
-            0, // Status 0 for network error
-            true // Network errors are transient
-        );
-    }
-}
-
-/**
- * Generic fetchBinance wrapper
+ * Generic fetchBinance wrapper using RateLimitHandler
  */
 export async function fetchBinance<T>(endpoint: string, params?: Record<string, any>): Promise<T> {
     const query = params ? '?' + new URLSearchParams(params as any).toString() : '';
     const url = `${BASE_URL}${endpoint}${query}`;
 
-    const response = await fetchWithRetry(url);
-    return response.json();
+    return rateLimitHandler.executeRequest<T>(() => fetch(url, {
+        headers: {
+            'Content-Type': 'application/json',
+        }
+    }));
 }
 
 /* =============================================

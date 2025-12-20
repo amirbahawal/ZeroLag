@@ -8,6 +8,7 @@
 import { useClientEngine } from './hooks/useClientEngine';
 import { AppShell } from './components/AppShell';
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { RateLimitBanner } from './components/RateLimitBanner';
 import './index.css';
 
 /* =============================================
@@ -206,6 +207,7 @@ function App() {
 
   return (
     <ErrorBoundary>
+      <RateLimitBanner />
       <AppShell />
     </ErrorBoundary>
   );
