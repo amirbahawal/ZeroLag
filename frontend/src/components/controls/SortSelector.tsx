@@ -1,15 +1,7 @@
-/**
- * SortSelector Component
- * 
- * Displays 8 pill-shaped buttons for selecting the active sort mode.
- * Horizontal row layout with proper active/inactive styling.
- */
-
 import React from 'react';
 import { useZeroLagStore } from '../../state/useZeroLagStore';
 import type { SortMode } from '../../core/types';
 
-/** Human-readable labels for sort modes */
 const SORT_MODE_LABELS: Record<SortMode, string> = {
     range_5m: '5m Range',
     range_15m: '15m Range',
@@ -21,16 +13,8 @@ const SORT_MODE_LABELS: Record<SortMode, string> = {
     gvolume: 'gVolume',
 };
 
-/** All available sort modes in display order */
 const SORT_MODES: SortMode[] = [
-    'range_5m',
-    'range_15m',
-    'range_1h',
-    'range_4h',
-    'dext',
-    'volume_15m',
-    'volume_24h',
-    'gvolume',
+    'range_5m', 'range_15m', 'range_1h', 'range_4h', 'dext', 'volume_15m', 'volume_24h', 'gvolume',
 ];
 
 export const SortSelector: React.FC = () => {
@@ -41,7 +25,6 @@ export const SortSelector: React.FC = () => {
         <div className="flex items-center gap-2">
             {SORT_MODES.map((mode) => {
                 const isActive = sortMode === mode;
-
                 return (
                     <button
                         key={mode}
@@ -54,14 +37,10 @@ export const SortSelector: React.FC = () => {
                             border: isActive ? 'none' : '1px solid var(--border-subtle, #374151)',
                         }}
                         onMouseEnter={(e) => {
-                            if (!isActive) {
-                                e.currentTarget.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.3)';
-                            }
+                            if (!isActive) e.currentTarget.style.boxShadow = '0 0 8px rgba(59, 130, 246, 0.3)';
                         }}
                         onMouseLeave={(e) => {
-                            if (!isActive) {
-                                e.currentTarget.style.boxShadow = 'none';
-                            }
+                            if (!isActive) e.currentTarget.style.boxShadow = 'none';
                         }}
                     >
                         {SORT_MODE_LABELS[mode]}

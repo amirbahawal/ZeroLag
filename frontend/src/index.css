@@ -3,40 +3,27 @@
 @tailwind utilities;
 
 :root {
-  /* Background Colors */
   --bg-page: #05060a;
   --bg-panel: #0c0f18;
   --bg-panel-soft: #10131d;
-
-  /* Border & Grid Colors */
   --border-subtle: #181c28;
   --grid-lines: #191d28;
-
-  /* Text Colors */
   --text-main: #e7edf7;
   --text-muted: #767c8f;
   --text-soft: #505568;
-
-  /* Accent Colors */
   --accent-cyan: #1cd0f9;
   --accent-blue: #3c82ff;
   --accent-amber: #f6b44d;
   --accent-red: #f25e72;
-
-  /* Candle Colors */
   --candle-up: #1fd39a;
   --candle-down: #f45b6c;
 
-  /* Typography Settings */
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* =============================================
-   Global Styles
-   ============================================= */
 * {
   box-sizing: border-box;
 }
@@ -44,7 +31,6 @@
 html {
   scroll-behavior: smooth;
   font-size: 14px;
-  /* Base size 14px */
 }
 
 body {
@@ -61,16 +47,8 @@ body {
   min-height: 100vh;
 }
 
-/* =============================================
-   Custom Utility Classes
-   ============================================= */
-
-/* Skeleton Loading Animation */
 .skeleton {
-  background: linear-gradient(90deg,
-      var(--bg-panel) 0%,
-      var(--bg-panel-soft) 50%,
-      var(--bg-panel) 100%);
+  background: linear-gradient(90deg, var(--bg-panel) 0%, var(--bg-panel-soft) 50%, var(--bg-panel) 100%);
   background-size: 200% 100%;
   animation: shimmer 1.5s ease-in-out infinite;
   border-radius: 4px;
@@ -86,7 +64,6 @@ body {
   }
 }
 
-/* Chart Cell Hover Effect */
 .chart-cell-hover {
   transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   border: 1px solid var(--border-subtle);
@@ -98,7 +75,6 @@ body {
   box-shadow: 0 0 18px rgba(60, 130, 255, 0.25);
 }
 
-/* Metric Badge */
 .metric-badge {
   display: inline-flex;
   align-items: center;
@@ -110,7 +86,6 @@ body {
   text-transform: uppercase;
 }
 
-/* Status Dot Indicator */
 .status-dot {
   display: inline-block;
   width: 8px;
@@ -133,17 +108,11 @@ body {
   box-shadow: 0 0 8px rgba(244, 91, 108, 0.6);
 }
 
-/* =============================================
-   Custom Scrollbar (Dark Theme)
-   ============================================= */
-
-/* Firefox */
 * {
   scrollbar-width: thin;
   scrollbar-color: var(--border-subtle) transparent;
 }
 
-/* Webkit Browsers (Chrome, Safari, Edge) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -167,38 +136,25 @@ body {
   background: transparent;
 }
 
-/* =============================================
-   Additional Utility Classes
-   ============================================= */
-
-/* Text Truncation */
 .text-truncate {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Smooth Transitions */
 .transition-smooth {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-/* Focus Visible (Accessibility) */
 *:focus-visible {
   outline: 2px solid var(--accent-cyan);
   outline-offset: 2px;
 }
 
-/* Disable default outline for mouse users */
 *:focus:not(:focus-visible) {
   outline: none;
 }
 
-/* =============================================
-   Grid & Transition Animations
-   ============================================= */
-
-/* Fade In Animation */
 @keyframes fadeIn {
   from {
     opacity: 0;
@@ -211,7 +167,6 @@ body {
   }
 }
 
-/* Quadrant Container Hover Effect */
 .quadrant-container {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
 }
@@ -220,12 +175,10 @@ body {
   background-color: rgba(255, 255, 255, 0.03);
 }
 
-/* Chart Cell Fade Animation for New Symbols */
 .chart-cell-enter {
   animation: fadeIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
 }
 
-/* Staggered delays for grid items */
 .chart-cell-enter:nth-child(1) {
   animation-delay: 0.03s;
 }
@@ -294,7 +247,6 @@ body {
   animation-delay: 0.50s;
 }
 
-/* Pulse Animation for Live Data */
 @keyframes livePulse {
 
   0%,
@@ -311,7 +263,6 @@ body {
   animation: livePulse 2s ease-in-out infinite;
 }
 
-/* No Scrollbar Utility */
 .no-scrollbar {
   -ms-overflow-style: none;
   scrollbar-width: none;
@@ -321,202 +272,6 @@ body {
   display: none;
 }
 
-/* Loading Progress Animation */
-@keyframes loading {
-  0% {
-    transform: translateX(-100%);
-  }
-}
-
-/* =============================================
-   Custom Scrollbar (Dark Theme)
-   ============================================= */
-
-/* Firefox */
-* {
-  scrollbar-width: thin;
-  scrollbar-color: var(--border-subtle) transparent;
-}
-
-/* Webkit Browsers (Chrome, Safari, Edge) */
-::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
-}
-
-::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-::-webkit-scrollbar-thumb {
-  background-color: var(--border-subtle);
-  border-radius: 4px;
-  transition: background-color 0.2s ease;
-}
-
-::-webkit-scrollbar-thumb:hover {
-  background-color: var(--text-soft);
-}
-
-::-webkit-scrollbar-corner {
-  background: transparent;
-}
-
-/* =============================================
-   Additional Utility Classes
-   ============================================= */
-
-/* Text Truncation */
-.text-truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* Smooth Transitions */
-.transition-smooth {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Focus Visible (Accessibility) */
-*:focus-visible {
-  outline: 2px solid var(--accent-cyan);
-  outline-offset: 2px;
-}
-
-/* Disable default outline for mouse users */
-*:focus:not(:focus-visible) {
-  outline: none;
-}
-
-/* =============================================
-   Grid & Transition Animations
-   ============================================= */
-
-/* Fade In Animation */
-@keyframes fadeIn {
-  from {
-    opacity: 0;
-    transform: translateY(8px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-/* Quadrant Container Hover Effect */
-.quadrant-container {
-  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-.quadrant-container:hover {
-  background-color: rgba(255, 255, 255, 0.03);
-}
-
-/* Chart Cell Fade Animation for New Symbols */
-.chart-cell-enter {
-  animation: fadeIn 0.5s cubic-bezier(0.2, 0.8, 0.2, 1) backwards;
-}
-
-/* Staggered delays for grid items */
-.chart-cell-enter:nth-child(1) {
-  animation-delay: 0.03s;
-}
-
-.chart-cell-enter:nth-child(2) {
-  animation-delay: 0.06s;
-}
-
-.chart-cell-enter:nth-child(3) {
-  animation-delay: 0.09s;
-}
-
-.chart-cell-enter:nth-child(4) {
-  animation-delay: 0.12s;
-}
-
-.chart-cell-enter:nth-child(5) {
-  animation-delay: 0.15s;
-}
-
-.chart-cell-enter:nth-child(6) {
-  animation-delay: 0.18s;
-}
-
-.chart-cell-enter:nth-child(7) {
-  animation-delay: 0.21s;
-}
-
-.chart-cell-enter:nth-child(8) {
-  animation-delay: 0.24s;
-}
-
-.chart-cell-enter:nth-child(9) {
-  animation-delay: 0.27s;
-}
-
-.chart-cell-enter:nth-child(10) {
-  animation-delay: 0.30s;
-}
-
-.chart-cell-enter:nth-child(11) {
-  animation-delay: 0.33s;
-}
-
-.chart-cell-enter:nth-child(12) {
-  animation-delay: 0.36s;
-}
-
-.chart-cell-enter:nth-child(13) {
-  animation-delay: 0.39s;
-}
-
-.chart-cell-enter:nth-child(14) {
-  animation-delay: 0.42s;
-}
-
-.chart-cell-enter:nth-child(15) {
-  animation-delay: 0.45s;
-}
-
-.chart-cell-enter:nth-child(16) {
-  animation-delay: 0.48s;
-}
-
-.chart-cell-enter:nth-child(n+17) {
-  animation-delay: 0.50s;
-}
-
-/* Pulse Animation for Live Data */
-@keyframes livePulse {
-
-  0%,
-  100% {
-    box-shadow: 0 0 0 0 rgba(28, 208, 249, 0);
-  }
-
-  50% {
-    box-shadow: 0 0 12px 2px rgba(28, 208, 249, 0.3);
-  }
-}
-
-.live-pulse {
-  animation: livePulse 2s ease-in-out infinite;
-}
-
-/* No Scrollbar Utility */
-.no-scrollbar {
-  -ms-overflow-style: none;
-  scrollbar-width: none;
-}
-
-.no-scrollbar::-webkit-scrollbar {
-  display: none;
-}
-
-/* Loading Progress Animation */
 @keyframes loading {
   0% {
     transform: translateX(-100%);
@@ -531,12 +286,12 @@ body {
   }
 }
 
-/* Slide In Right Animation */
 @keyframes slide-in-right {
   from {
     transform: translateX(100%);
     opacity: 0;
   }
+
   to {
     transform: translateX(0);
     opacity: 1;

@@ -1,11 +1,3 @@
-/**
- * ChartGrid Component
- * 
- * Responsive grid layout for displaying chart cells.
- * Automatically adjusts grid template based on count (4, 9, 16, or 25).
- * Shows ChartCell for loaded data, ChartSkeleton while loading.
- */
-
 import React, { useMemo } from 'react';
 import { useZeroLagStore, useVisibleSymbols } from '../../state/useZeroLagStore';
 import { ChartCell } from './ChartCell';
@@ -15,7 +7,6 @@ export const ChartGrid: React.FC = () => {
     const count = useZeroLagStore(state => state.count);
     const visibleSymbols = useVisibleSymbols();
 
-    // Calculate grid columns/rows based on count
     const gridClass = useMemo(() => {
         switch (count) {
             case 4: return 'grid-cols-2 grid-rows-2';
@@ -26,10 +17,7 @@ export const ChartGrid: React.FC = () => {
         }
     }, [count]);
 
-    // Generate array of slots to render
-    const slots = useMemo(() => {
-        return Array.from({ length: count }, (_, i) => i);
-    }, [count]);
+    const slots = useMemo(() => Array.from({ length: count }, (_, i) => i), [count]);
 
     return (
         <div
@@ -38,23 +26,10 @@ export const ChartGrid: React.FC = () => {
         >
             {slots.map((index) => {
                 const entry = visibleSymbols[index];
-
-                // If we have data for this slot, render the chart
-                if (entry) {
-                    return (
-                        <ChartCell
-                            key={`${entry.info.symbol}-${index}`}
-                            entry={entry}
-                        />
-                    );
-                }
-
-                // Otherwise render a skeleton/placeholder
-                return (
-                    <ChartSkeleton
-                        key={`skeleton-${index}`}
-                        index={index}
-                    />
+                return entry ? (
+                    <ChartCell key={`${entry.info.symbol}-${index}`} entry={entry} />
+                ) : (
+                    <ChartSkeleton key={`skeleton-${index}`} index={index} />
                 );
             })}
         </div>

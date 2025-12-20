@@ -1,24 +1,8 @@
-/**
- * CountSelector Component
- * 
- * Grid size selector for controlling how many chart cells to display.
- * Options: 4 (2×2), 9 (3×3), 16 (4×4), 25 (5×5)
- * Small square buttons (32×32px) positioned next to status indicators.
- */
-
 import React from 'react';
 import { useZeroLagStore } from '../../state/useZeroLagStore';
 
-/** Available grid counts */
 const GRID_COUNTS = [4, 9, 16, 25] as const;
-
-/** Grid size labels */
-const GRID_LABELS: Record<number, string> = {
-    4: '2×2',
-    9: '3×3',
-    16: '4×4',
-    25: '5×5',
-};
+const GRID_LABELS: Record<number, string> = { 4: '2×2', 9: '3×3', 16: '4×4', 25: '5×5' };
 
 export const CountSelector: React.FC = () => {
     const count = useZeroLagStore((state) => state.count);
@@ -28,7 +12,6 @@ export const CountSelector: React.FC = () => {
         <div className="flex items-center gap-1.5">
             {GRID_COUNTS.map((gridCount) => {
                 const isActive = count === gridCount;
-
                 return (
                     <button
                         key={gridCount}

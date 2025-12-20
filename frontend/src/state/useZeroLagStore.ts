@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { useMemo } from 'react';
+import { useMemo, useRef } from 'react';
 import type {
     SortMode,
     Interval,
@@ -11,45 +11,37 @@ import type {
 export type ApiStatus = 'ok' | 'rate_limited' | 'error';
 
 export interface ZeroLagState {
-    // ========== CONTROLS ==========
     sortMode: SortMode;
     interval: Interval;
     count: 4 | 9 | 16 | 25;
-
-    // ========== SYSTEM ==========
     apiStatus: ApiStatus;
     wsConnected: boolean;
-
-    // ========== DATA ==========
-    symbols: Record<string, SymbolInfo>;  // by symbol
-    activeSymbols: string[];              // top 100 by volume_24h
-
+    isRulerActive: boolean;
+    symbols: Record<string, SymbolInfo>;
+    activeSymbols: string[];
     metricsBySymbol: Record<string, SymbolMetrics>;
     rankings: Record<SortMode, SymbolTopEntry[]>;
 
-    // ========== ACTIONS ==========
     setSortMode: (mode: SortMode) => void;
     setInterval: (interval: Interval) => void;
     setCount: (count: 4 | 9 | 16 | 25) => void;
-
     setApiStatus: (status: ApiStatus) => void;
     setWsConnected: (connected: boolean) => void;
-
+    setIsRulerActive: (active: boolean) => void;
     setSymbols: (symbols: Record<string, SymbolInfo>) => void;
     setActiveSymbols: (symbols: string[]) => void;
-
     upsertMetrics: (symbol: string, metrics: SymbolMetrics) => void;
     updateMetricsBatch: (metrics: Record<string, SymbolMetrics>) => void;
     setRankings: (rankings: Record<SortMode, SymbolTopEntry[]>) => void;
 }
 
-// Initial state
 const initialState: Partial<ZeroLagState> = {
     sortMode: 'volume_24h',
     interval: '1h',
     count: 16,
     apiStatus: 'ok',
     wsConnected: false,
+    isRulerActive: false,
     symbols: {},
     activeSymbols: [],
     metricsBySymbol: {},
@@ -71,20 +63,17 @@ export const useZeroLagStore = create<ZeroLagState>((set) => ({
     setSortMode: (mode) => set({ sortMode: mode }),
     setInterval: (interval) => set({ interval }),
     setCount: (count) => set({ count }),
-
     setApiStatus: (status) => set({ apiStatus: status }),
     setWsConnected: (connected) => set({ wsConnected: connected }),
-
+    setIsRulerActive: (active) => set({ isRulerActive: active }),
     setSymbols: (symbols) => set({ symbols }),
     setActiveSymbols: (symbols) => set({ activeSymbols: symbols }),
-
     upsertMetrics: (symbol, metrics) => set((state) => ({
         metricsBySymbol: {
             ...state.metricsBySymbol,
             [symbol]: metrics
         }
     })),
-
     updateMetricsBatch: (metrics) => set((state) => ({
         metricsBySymbol: {
             ...state.metricsBySymbol,
@@ -94,18 +83,27 @@ export const useZeroLagStore = create<ZeroLagState>((set) => ({
     setRankings: (rankings) => set({ rankings })
 }));
 
-/**
- * Derived selector: visible symbols
- */
 export function useVisibleSymbols(): SymbolTopEntry[] {
     const sortMode = useZeroLagStore(state => state.sortMode);
     const count = useZeroLagStore(state => state.count);
     const rankings = useZeroLagStore(state => state.rankings);
+    const isRulerActive = useZeroLagStore(state => state.isRulerActive);
+    const frozenSymbols = useRef<SymbolTopEntry[] | null>(null);
 
     return useMemo(() => {
         const ranking = rankings[sortMode] || [];
-        return ranking.slice(0, count);
-    }, [rankings, sortMode, count]);
+        const current = ranking.slice(0, count);
+
+        if (isRulerActive) {
+            if (!frozenSymbols.current) {
+                frozenSymbols.current = current;
+            }
+            return frozenSymbols.current;
+        } else {
+            frozenSymbols.current = null;
+            return current;
+        }
+    }, [rankings, sortMode, count, isRulerActive]);
 }
 
 export function useSortMode(): SortMode {

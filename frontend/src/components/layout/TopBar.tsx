@@ -4,14 +4,6 @@ import { SortSelector } from '../controls/SortSelector';
 import { IntervalSelector } from '../controls/IntervalSelector';
 import { CountSelector } from '../controls/CountSelector';
 
-/**
- * TopBar - Main control bar
- * 
- * Three-section layout:
- * - Left: Sort mode selector
- * - Center: Interval selector
- * - Right: Grid count selector + status indicators
- */
 export const TopBar: React.FC = () => {
     const { wsConnected, apiStatus } = useZeroLagStore();
 
@@ -19,19 +11,15 @@ export const TopBar: React.FC = () => {
         <header
             className="h-[52px] flex items-center px-4 shrink-0 select-none rounded-lg bg-[color:var(--bg-panel-soft)] border-b border-[color:var(--border-subtle)]"
         >
-            {/* LEFT SECTION: Sort Selector */}
             <div className="flex-1 flex items-center">
                 <SortSelector />
             </div>
 
-            {/* CENTER SECTION: Interval Selector */}
             <div className="flex items-center justify-center">
                 <IntervalSelector />
             </div>
 
-            {/* RIGHT SECTION: Count Selector + Status */}
             <div className="flex-1 flex items-center justify-end gap-6">
-                {/* Status Banner */}
                 {apiStatus === 'rate_limited' && (
                     <div className="flex items-center gap-2 px-3 py-1 rounded-md bg-[color:var(--accent-amber)]/10 border border-[color:var(--accent-amber)]/20 animate-pulse">
                         <div className="w-1.5 h-1.5 rounded-full bg-[color:var(--accent-amber)]" />
@@ -52,9 +40,7 @@ export const TopBar: React.FC = () => {
 
                 <CountSelector />
 
-                {/* Status Indicators */}
                 <div className="flex items-center gap-4">
-                    {/* REST Status */}
                     <div className="flex items-center gap-2">
                         <span className="text-[11px] font-medium text-[color:var(--text-muted)]">REST</span>
                         <div
@@ -63,7 +49,6 @@ export const TopBar: React.FC = () => {
                         />
                     </div>
 
-                    {/* WS Status */}
                     <div className="flex items-center gap-2">
                         <span className="text-[11px] font-medium text-[color:var(--text-muted)]">WS</span>
                         <div

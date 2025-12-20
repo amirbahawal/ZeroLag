@@ -1,9 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import type { Candle } from '../core/types';
 
-/**
- * Diagnostic overlay - FIXED infinite loop issue
- */
 export const ChartDiagnostics: React.FC<{
     symbol: string;
     interval: string;
@@ -20,12 +17,9 @@ export const ChartDiagnostics: React.FC<{
             first: candles?.[0],
             last: candles?.[candles?.length - 1]
         });
-    }, [symbol, interval, candles]); // ✅ No state in dependencies
+    }, [symbol, interval, candles]);
 
-    // Use Vite's import.meta.env instead of process.env
-    if (!import.meta.env.DEV) {
-        return null;
-    }
+    if (!import.meta.env.DEV) return null;
 
     return (
         <div style={{

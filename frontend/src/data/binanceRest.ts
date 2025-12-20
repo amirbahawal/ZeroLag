@@ -1,34 +1,11 @@
-/**
- * Binance Futures REST API Client
- * 
- * Provides functions for fetching market data from Binance Futures API
- * with built-in retry logic and rate limit handling.
- */
-
 import type { Interval, Candle, SymbolInfo } from '../core/types';
+import { rateLimitHandler } from './RateLimitHandler';
 
-/* =============================================
-   TYPES
-   ============================================= */
-
-/** Raw kline/candlestick data from Binance API */
 export type BinanceKline = [
-    number,  // Open time
-    string,  // Open
-    string,  // High
-    string,  // Low
-    string,  // Close
-    string,  // Volume
-    number,  // Close time
-    string,  // Quote asset volume
-    number,  // Number of trades
-    string,  // Taker buy base asset volume
-    string,  // Taker buy quote asset volume
-    string   // Ignore
+    number, string, string, string, string, string, number, string, number, string, string, string
 ];
 export type RawKline = BinanceKline;
 
-/** 24h ticker data from Binance API */
 export interface BinanceTicker24h {
     symbol: string;
     priceChange: string;
@@ -49,19 +26,16 @@ export interface BinanceTicker24h {
 }
 export type Ticker24h = BinanceTicker24h;
 
-/** Exchange info symbol data */
 export interface BinanceSymbolInfo {
     symbol: string;
     status: string;
     baseAsset: string;
     quoteAsset: string;
     contractType: string;
-    // ... other fields
     [key: string]: unknown;
 }
 export type ExchangeSymbol = BinanceSymbolInfo;
 
-/** Exchange info response */
 export interface BinanceExchangeInfo {
     timezone: string;
     serverTime: number;
@@ -69,31 +43,15 @@ export interface BinanceExchangeInfo {
 }
 export type ExchangeInfo = BinanceExchangeInfo;
 
-/* =============================================
-   CONSTANTS
-   ============================================= */
-
-/** Binance Futures API base URL */
 export const BINANCE_FUTURES_BASE = 'https://fapi.binance.com';
 export const BASE_URL = import.meta.env.DEV ? '' : BINANCE_FUTURES_BASE;
-
-
-
-/* =============================================
-   ERROR TYPES
-   ============================================= */
 
 export class RestApiError extends Error {
     public statusCode?: number;
     public isTransient: boolean;
     public response?: unknown;
 
-    constructor(
-        message: string,
-        statusCode?: number,
-        isTransient: boolean = false,
-        response?: unknown
-    ) {
+    constructor(message: string, statusCode?: number, isTransient: boolean = false, response?: unknown) {
         super(message);
         this.name = 'RestApiError';
         this.statusCode = statusCode;
@@ -104,24 +62,13 @@ export class RestApiError extends Error {
 
 export class RateLimitError extends RestApiError {
     constructor(message: string) {
-        super(message, 429, true); // Rate limits are transient-ish (can retry after wait)
+        super(message, 429, true);
         this.name = 'RateLimitError';
     }
 }
 
-export { RestApiError as BinanceApiError }; // Alias for backward compatibility
+export { RestApiError as BinanceApiError };
 
-/* =============================================
-   HELPER FUNCTIONS
-   ============================================= */
-
-
-
-/**
- * Concurrency Controller
- * 
- * Limits the number of concurrent requests to prevent rate limiting.
- */
 class ConcurrencyController {
     private running: number = 0;
     private queue: Array<{
@@ -135,9 +82,6 @@ class ConcurrencyController {
         this.maxConcurrent = maxConcurrent;
     }
 
-    /**
-     * Run a function with concurrency control
-     */
     async run<T>(fn: () => Promise<T>): Promise<T> {
         if (this.running < this.maxConcurrent) {
             this.running++;
@@ -175,11 +119,6 @@ class ConcurrencyController {
 
 export const concurrencyController = new ConcurrencyController(4);
 
-import { rateLimitHandler } from './RateLimitHandler';
-
-/**
- * Generic fetchBinance wrapper using RateLimitHandler
- */
 export async function fetchBinance<T>(endpoint: string, params?: Record<string, any>): Promise<T> {
     const query = params ? '?' + new URLSearchParams(params as any).toString() : '';
     const url = `${BASE_URL}${endpoint}${query}`;
@@ -191,22 +130,10 @@ export async function fetchBinance<T>(endpoint: string, params?: Record<string, 
     }));
 }
 
-/* =============================================
-   API FUNCTIONS
-   ============================================= */
-
-/**
- * Fetch 24-hour ticker data for all symbols
- */
 export async function fetch24hTickers(): Promise<BinanceTicker24h[]> {
     try {
         const data = await fetchBinance<BinanceTicker24h[]>('/fapi/v1/ticker/24hr');
-
-        if (!Array.isArray(data)) {
-            throw new RestApiError('Expected array of tickers');
-        }
-
-        console.log(`[Binance API] Fetched ${data.length} tickers`);
+        if (!Array.isArray(data)) throw new RestApiError('Expected array of tickers');
         return data;
     } catch (error) {
         console.error('[Binance API] Failed to fetch 24h tickers:', error);
@@ -214,41 +141,18 @@ export async function fetch24hTickers(): Promise<BinanceTicker24h[]> {
     }
 }
 
-/**
- * Cache for exchange info to prevent excessive calls
- */
-let exchangeInfoCache: {
-    data: BinanceExchangeInfo;
-    timestamp: number;
-} | null = null;
+let exchangeInfoCache: { data: BinanceExchangeInfo; timestamp: number } | null = null;
+const EXCHANGE_INFO_TTL = 5 * 60 * 1000;
 
-const EXCHANGE_INFO_TTL = 5 * 60 * 1000; // 5 minutes
-
-/**
- * Fetch exchange information
- * 
- * Uses in-memory caching with 5-minute TTL.
- */
 export async function fetchExchangeInfo(): Promise<BinanceExchangeInfo> {
     const now = Date.now();
-
-    // Return cached data if valid
     if (exchangeInfoCache && (now - exchangeInfoCache.timestamp < EXCHANGE_INFO_TTL)) {
         return exchangeInfoCache.data;
     }
 
     try {
         const data = await fetchBinance<BinanceExchangeInfo>('/fapi/v1/exchangeInfo');
-
-        // Update cache
-        exchangeInfoCache = {
-            data,
-            timestamp: now
-        };
-
-        console.log(
-            `[Binance API] Fetched exchange info with ${data.symbols?.length || 0} symbols`
-        );
+        exchangeInfoCache = { data, timestamp: now };
         return data;
     } catch (error) {
         console.error('[Binance API] Failed to fetch exchange info:', error);
@@ -256,14 +160,8 @@ export async function fetchExchangeInfo(): Promise<BinanceExchangeInfo> {
     }
 }
 
-/**
- * Get active USDT futures symbols
- * 
- * Fetches exchange info and maps to internal SymbolInfo format.
- */
 export async function getActiveSymbols(): Promise<SymbolInfo[]> {
     const info = await fetchExchangeInfo();
-
     return info.symbols.map(s => ({
         symbol: s.symbol,
         baseAsset: s.baseAsset,
@@ -273,30 +171,10 @@ export async function getActiveSymbols(): Promise<SymbolInfo[]> {
     }));
 }
 
-/**
- * Fetch kline/candlestick data for a symbol
- * 
- * Fetches raw klines, validates inputs, and converts to Candle objects.
- * Uses concurrency controller to limit parallel requests.
- * 
- * @param symbol - Trading symbol (e.g., 'BTCUSDT')
- * @param interval - Candlestick interval (e.g., '1h')
- * @param limit - Number of candles to fetch (1-1500)
- */
-export async function fetchKlines(
-    symbol: string,
-    interval: Interval,
-    limit: number
-): Promise<Candle[]> {
-    // Validation
-    if (limit < 1 || limit > 1500) {
-        throw new Error(`Invalid limit: ${limit}. Must be between 1 and 1500.`);
-    }
-
+export async function fetchKlines(symbol: string, interval: Interval, limit: number): Promise<Candle[]> {
+    if (limit < 1 || limit > 1500) throw new Error(`Invalid limit: ${limit}`);
     const validIntervals: Interval[] = ['1m', '5m', '15m', '1h', '4h', '1d'];
-    if (!validIntervals.includes(interval)) {
-        throw new Error(`Invalid interval: ${interval}`);
-    }
+    if (!validIntervals.includes(interval)) throw new Error(`Invalid interval: ${interval}`);
 
     try {
         const rawKlines = await concurrencyController.run(() => fetchBinance<BinanceKline[]>('/fapi/v1/klines', {
@@ -305,24 +183,10 @@ export async function fetchKlines(
             limit: limit.toString(),
         }));
 
-        if (!Array.isArray(rawKlines)) {
-            throw new RestApiError('Expected array of klines');
-        }
+        if (!Array.isArray(rawKlines)) throw new RestApiError('Expected array of klines');
 
-        // Parse and sort
-        const candles = rawKlines.map(kline => {
-            const [
-                openTime,
-                open,
-                high,
-                low,
-                close,
-                volume,
-                closeTime,
-                quoteVolume,
-                trades,
-            ] = kline;
-
+        return rawKlines.map(kline => {
+            const [openTime, open, high, low, close, volume, closeTime, quoteVolume, trades] = kline;
             return {
                 symbol,
                 interval,
@@ -335,24 +199,15 @@ export async function fetchKlines(
                 volumeBase: parseFloat(volume),
                 volumeQuote: parseFloat(quoteVolume),
                 trades,
-                isFinal: true // REST data is considered final
+                isFinal: true
             };
         }).sort((a, b) => a.openTime - b.openTime);
-
-        console.log(`[Binance API] Fetched ${candles.length} klines for ${symbol} (${interval})`);
-        return candles;
     } catch (error) {
-        console.error(
-            `[Binance API] Failed to fetch klines for ${symbol}:`,
-            error
-        );
+        console.error(`[Binance API] Failed to fetch klines for ${symbol}:`, error);
         throw error;
     }
 }
 
-/**
- * Fetch current server time
- */
 export async function fetchServerTime(): Promise<number> {
     try {
         const data = await fetchBinance<{ serverTime: number }>('/fapi/v1/time');
@@ -363,13 +218,9 @@ export async function fetchServerTime(): Promise<number> {
     }
 }
 
-/**
- * Test connectivity to the REST API
- */
 export async function testConnectivity(): Promise<boolean> {
     try {
         await fetchBinance('/fapi/v1/ping');
-        console.log('[Binance API] Connectivity test successful');
         return true;
     } catch (error) {
         console.error('[Binance API] Connectivity test failed:', error);
@@ -377,35 +228,10 @@ export async function testConnectivity(): Promise<boolean> {
     }
 }
 
-/* =============================================
-   DATA PARSING FUNCTIONS
-   ============================================= */
-
-/**
- * Parse raw kline data into Candle format.
- */
-export function parseKlineToCandle(
-    symbol: string,
-    interval: Interval,
-    rawKline: BinanceKline
-): Candle {
-    const [
-        openTime,
-        open,
-        high,
-        low,
-        close,
-        volume,
-        closeTime,
-        quoteVolume,
-        trades,
-    ] = rawKline;
-
+export function parseKlineToCandle(symbol: string, interval: Interval, rawKline: BinanceKline): Candle {
+    const [openTime, open, high, low, close, volume, closeTime, quoteVolume, trades] = rawKline;
     return {
-        symbol,
-        interval,
-        openTime,
-        closeTime,
+        symbol, interval, openTime, closeTime,
         open: parseFloat(open),
         high: parseFloat(high),
         low: parseFloat(low),
@@ -417,20 +243,10 @@ export function parseKlineToCandle(
     };
 }
 
-/**
- * Parse multiple raw klines into Candle array.
- */
-export function parseKlinesToCandles(
-    symbol: string,
-    interval: Interval,
-    rawKlines: BinanceKline[]
-): Candle[] {
+export function parseKlinesToCandles(symbol: string, interval: Interval, rawKlines: BinanceKline[]): Candle[] {
     return rawKlines.map(kline => parseKlineToCandle(symbol, interval, kline));
 }
 
-/**
- * Parse exchange symbol data into SymbolInfo format.
- */
 export function parseExchangeSymbolToInfo(exchangeSymbol: BinanceSymbolInfo): SymbolInfo {
     return {
         symbol: exchangeSymbol.symbol,
@@ -441,24 +257,12 @@ export function parseExchangeSymbolToInfo(exchangeSymbol: BinanceSymbolInfo): Sy
     };
 }
 
-/**
- * Parse exchange info into SymbolInfo array.
- * 
- * NOTE: Domain-level helper. Not used internally by REST layer.
- */
 export function parseExchangeInfoToSymbols(exchangeInfo: BinanceExchangeInfo): SymbolInfo[] {
     return exchangeInfo.symbols
-        .filter(s =>
-            s.quoteAsset === 'USDT' &&
-            s.contractType === 'PERPETUAL' &&
-            s.status === 'TRADING'
-        )
+        .filter(s => s.quoteAsset === 'USDT' && s.contractType === 'PERPETUAL' && s.status === 'TRADING')
         .map(parseExchangeSymbolToInfo);
 }
 
-/**
- * Parse ticker data to extract key metrics.
- */
 export function parseTickerMetrics(ticker: BinanceTicker24h) {
     return {
         symbol: ticker.symbol,
@@ -474,43 +278,11 @@ export function parseTickerMetrics(ticker: BinanceTicker24h) {
     };
 }
 
-/**
- * Determine active symbols from ticker data
- * 
- * Filters for USDT pairs with volume > 0, sorts by volume, and returns top 100.
- * 
- * NOTE: Domain-level helper. Not used internally by REST layer.
- */
 export function determineActiveSymbols(tickers: BinanceTicker24h[]): string[] {
-    if (!Array.isArray(tickers)) {
-        console.warn('[Binance API] Invalid ticker data provided to determineActiveSymbols');
-        return [];
-    }
-
+    if (!Array.isArray(tickers)) return [];
     return tickers
         .filter(t => t.symbol.endsWith('USDT') && parseFloat(t.quoteVolume) > 0)
         .sort((a, b) => parseFloat(b.quoteVolume) - parseFloat(a.quoteVolume))
         .slice(0, 100)
         .map(t => t.symbol);
-}
-
-/**
- * Unit test for determineActiveSymbols (Manual execution)
- */
-export function testDetermineActiveSymbols() {
-    const mockTickers: BinanceTicker24h[] = [
-        { symbol: 'BTCUSDT', quoteVolume: '1000', priceChange: '0', priceChangePercent: '0', weightedAvgPrice: '0', lastPrice: '0', lastQty: '0', openPrice: '0', highPrice: '0', lowPrice: '0', volume: '0', openTime: 0, closeTime: 0, firstId: 0, lastId: 0, count: 0 },
-        { symbol: 'ETHUSDT', quoteVolume: '500', priceChange: '0', priceChangePercent: '0', weightedAvgPrice: '0', lastPrice: '0', lastQty: '0', openPrice: '0', highPrice: '0', lowPrice: '0', volume: '0', openTime: 0, closeTime: 0, firstId: 0, lastId: 0, count: 0 },
-        { symbol: 'XRPUSDT', quoteVolume: '0', priceChange: '0', priceChangePercent: '0', weightedAvgPrice: '0', lastPrice: '0', lastQty: '0', openPrice: '0', highPrice: '0', lowPrice: '0', volume: '0', openTime: 0, closeTime: 0, firstId: 0, lastId: 0, count: 0 }, // Zero volume
-        { symbol: 'BTCBUSD', quoteVolume: '2000', priceChange: '0', priceChangePercent: '0', weightedAvgPrice: '0', lastPrice: '0', lastQty: '0', openPrice: '0', highPrice: '0', lowPrice: '0', volume: '0', openTime: 0, closeTime: 0, firstId: 0, lastId: 0, count: 0 }, // Not USDT
-        { symbol: 'SOLUSDT', quoteVolume: '800', priceChange: '0', priceChangePercent: '0', weightedAvgPrice: '0', lastPrice: '0', lastQty: '0', openPrice: '0', highPrice: '0', lowPrice: '0', volume: '0', openTime: 0, closeTime: 0, firstId: 0, lastId: 0, count: 0 },
-    ];
-
-    const result = determineActiveSymbols(mockTickers);
-    console.log('[Test] determineActiveSymbols result:', result);
-
-    const expected = ['BTCUSDT', 'SOLUSDT', 'ETHUSDT'];
-    const passed = JSON.stringify(result) === JSON.stringify(expected);
-    console.log('[Test] determineActiveSymbols passed:', passed);
-    return passed;
 }

@@ -1,25 +1,16 @@
-/**
- * FilterBar Component
- * 
- * Compact filter buttons for the top-right corner.
- */
-
 import React from 'react';
 import { useSortMode, useZeroLagStore } from '../../state/useZeroLagStore';
 import { refreshRankings } from '../../core/ranking';
 import type { SortMode } from '../../core/types';
 
 const FILTERS: { mode: SortMode; label: string; group: 'volume' | 'range' | 'special' }[] = [
-    // Volume filters
     { mode: 'volume_24h', label: 'Vol 24h', group: 'volume' },
     { mode: 'volume_15m', label: 'Vol 15m', group: 'volume' },
     { mode: 'gvolume', label: 'Growth', group: 'volume' },
-    // Range/Volatility filters
     { mode: 'range_4h', label: 'Range 4h', group: 'range' },
     { mode: 'range_1h', label: 'Range 1h', group: 'range' },
     { mode: 'range_15m', label: 'Range 15m', group: 'range' },
     { mode: 'range_5m', label: 'Range 5m', group: 'range' },
-    // Special filters  
     { mode: 'dext', label: 'Extremum', group: 'special' },
 ];
 
